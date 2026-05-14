@@ -427,13 +427,14 @@ def load_data():
 # =====================================================
 # INTERFACE QT
 # =====================================================
-now = datetime.now()
-limit = add_business_days(now, 2)
 
 class MainWindow(QMainWindow):
 
     def refresh_data(self):
         global Tomo2, Tomo4, Tomo7, Nova
+        self.now = datetime.now()
+        self.limit = add_business_days(self.now, 2)
+
         # =========================
         # SAVE CURRENT TAB
         # =========================
@@ -458,14 +459,16 @@ class MainWindow(QMainWindow):
         # =========================
         # UPDATE LAST REFRESH TIME
         # =========================
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.last_refresh_label.setText(f"Dernier refresh (30sec) : {now}")
+        self.last_refresh_label.setText(f"Dernier refresh (30 sec) : {self.now.strftime('%Y-%m-%d %H:%M:%S')}")
 
     def __init__(self):
         super().__init__()
 
         self.setWindowTitle("CQ Dashboard")
         self.resize(1200, 700)
+
+        self.now = datetime.now()
+        self.limit = add_business_days(self.now, 2)
 
         # =========================
         # UI ROOT TABS
@@ -524,48 +527,66 @@ class MainWindow(QMainWindow):
             # COLOR LOGIC
             # =========================
             color = QColor(255, 200, 200)  # rouge par défaut
-
+            tooltip = ""
             if not met_date:
                 color = QColor(220, 220, 220)
+                tooltip = "Aucune date définie"
 
-            elif met_date < now:
-                color = QColor(255, 150, 150)  # passé
+            elif met_date < self.now:
+                color = QColor(255, 150, 150)
+                tooltip = f"⚠️ En retard de {(self.now - met_date).days} jour(s)"
 
-            elif met_date <= limit:
-                color = QColor(255, 220, 150)  # urgent
+            elif met_date <= self.limit:
+                color = QColor(255, 220, 150)
+                tooltip = f"⏳ Urgent : {(met_date - self.now).days} jour(s) restant(s)"
 
             else:
-                color = QColor(200, 255, 200)  # OK
+                color = QColor(200, 255, 200)
+                tooltip = f"OK : {(met_date - self.now).days} jour(s) restants"
 
+           
             # =========================
             # STATUS DOT
             # =========================
-            if met_date:
-                if met_date > now + timedelta(days=2):
-                    dot = "🟢"
-                else:
-                    dot = "🔴"
-            else:
+            if not met_date:
                 dot = "⚪"
+            elif met_date < self.now:
+                dot = "🔴"
+            elif met_date <= self.limit:
+                dot = "🟠"
+            else:
+                dot = "🟢"
 
             # =========================
-            # TABLE ITEMS
+            # CREATE ITEMS
             # =========================
-            table.setItem(row, 0, QTableWidgetItem(dot))
-            table.setItem(row, 1, QTableWidgetItem(str(met_date)))
-            table.setItem(row, 2, QTableWidgetItem(f'{patient["last_name"]} {patient["first_name"]}'))
-            table.setItem(row, 3, QTableWidgetItem(str(patient["ipp"])))
-            table.setItem(row, 4, QTableWidgetItem(str(patient["task_display_focus"])))
-            table.setItem(row, 5, QTableWidgetItem(str(patient["task_status"])))
-            table.setItem(row, 6, QTableWidgetItem(str(patient.get("task_note") or "")))
+            item0 = QTableWidgetItem(dot)
+            item1 = QTableWidgetItem(str(met_date))
+            item2 = QTableWidgetItem(f'{patient["last_name"]} {patient["first_name"]}')
+            item3 = QTableWidgetItem(str(patient["ipp"]))
+            item4 = QTableWidgetItem(str(patient["task_display_focus"]))
+            item5 = QTableWidgetItem(str(patient["task_status"]))
+            item6 = QTableWidgetItem(str(patient.get("task_note") or ""))
 
             # =========================
-            # APPLY COLOR TO FULL ROW
+            # TOOLTIP + COLOR (sur toute la ligne)
             # =========================
-            for col in range(7):
-                item = table.item(row, col)
-                if item:
-                    item.setBackground(QBrush(color))
+            items = [item0, item1, item2, item3, item4, item5, item6]
+            for i in items:
+                i.setBackground(QBrush(color))
+                i.setToolTip(tooltip)
+
+            # =========================
+            # INSERT INTO TABLE
+            # =========================
+            table.setItem(row, 0, item0)
+            table.setItem(row, 1, item1)
+            table.setItem(row, 2, item2)
+            table.setItem(row, 3, item3)
+            table.setItem(row, 4, item4)
+            table.setItem(row, 5, item5)
+            table.setItem(row, 6, item6)
+
 
         table.resizeColumnsToContents()
 
