@@ -356,6 +356,7 @@ def load_data():
     print("\nROWS RAW:")
     print(rows)
 
+       
 
     # =========================================================
     # Sorting of patients according to the machine concerned for QA
