@@ -43,6 +43,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QColor, QBrush
 from PySide6.QtCore import QTimer
 
+from pathlib import Path
+
 import sys
 
 # =========================================================
@@ -264,10 +266,115 @@ def add_business_days(start_date, days):
 
     return current
 
+
+
+
+# =========================================================
+# Check if patient folder already exists on network
+# =========================================================
+
+def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
+
+    import os
+    from datetime import datetime
+
+    # =========================
+    # NETWORK PATHS TOMO
+    # =========================
+    network_path_Tomo2 = r"\\nasdata1\TOMO\02 - CQ Patients\0_DELTA4\TOMO2"
+    network_path_Tomo4 = r"\\nasdata1\TOMO\02 - CQ Patients\0_DELTA4\TOMO4"
+    network_path_Tomo7 = r"\\nasdata1\TOMO\02 - CQ Patients\0_DELTA4\RADI7"
+
+    # =========================
+    # NETWORK PATHS NOVA
+    # =========================
+    network_path_Nova = {
+        "EC": r"\\srv015\Radiophysique_acquisition\Patients_stereo_EC_IUC",
+        "Hyperarc": r"\\srv015\Radiophysique_acquisition\Patients_stereo_Hyperarc",
+        "RA": r"\\srv015\Radiophysique_acquisition\Patients_RA"
+    }
+
+    current_year = str(datetime.now().year)
+
+    # =========================
+    # TOMO CACHE (LEVEL 1 ONLY)
+    # =========================
+    def build_cache(path):
+        try:
+            with os.scandir(path) as it:
+                return {entry.name for entry in it if entry.is_dir()}
+        except Exception as e:
+            print(f"[CACHE ERROR] {path} -> {e}")
+            return set()
+
+    cache_Tomo2 = build_cache(network_path_Tomo2)
+    cache_Tomo4 = build_cache(network_path_Tomo4)
+    cache_Tomo7 = build_cache(network_path_Tomo7)
+
+    # =========================
+    # NOVA CACHE (LEVEL 1 ONLY + YEAR FOLDER)
+    # =========================
+    def build_cache_nova(path):
+        year_path = os.path.join(path, current_year)
+
+        try:
+            with os.scandir(year_path) as it:
+                return {entry.name for entry in it if entry.is_dir()}
+        except Exception as e:
+            print(f"[NOVA CACHE ERROR] {year_path} -> {e}")
+            return set()
+
+    cache_EC = build_cache_nova(network_path_Nova["EC"])
+    cache_Hyperarc = build_cache_nova(network_path_Nova["Hyperarc"])
+    cache_RA = build_cache_nova(network_path_Nova["RA"])
+
+    # =========================
+    # MATCH FUNCTION
+    # =========================
+    def folder_exists(cache, ipp):
+        if not ipp:
+            return False
+        ipp = str(ipp).strip()
+        return any(ipp in name for name in cache)
+
+    def nova_exists(ipp):
+        return (
+            folder_exists(cache_EC, ipp) or
+            folder_exists(cache_Hyperarc, ipp) or
+            folder_exists(cache_RA, ipp)
+        )
+
+    # =========================
+    # TOMO2
+    # =========================
+    print("Explore folder Tomo2")
+    for row in Tomo2:
+        row["existing_folder"] = folder_exists(cache_Tomo2, row.get("ipp"))
+
+    # =========================
+    # TOMO4
+    # =========================
+    print("Explore folder Tomo4")
+    for row in Tomo4:
+        row["existing_folder"] = folder_exists(cache_Tomo4, row.get("ipp"))
+
+    # =========================
+    # TOMO7
+    # =========================
+    print("Explore folder Tomo7")
+    for row in Tomo7:
+        row["existing_folder"] = folder_exists(cache_Tomo7, row.get("ipp"))
+
+    # =========================
+    # NOVA
+    # =========================
+    print("Explore folder Nova")
+    for row in Nova:
+        row["existing_folder"] = nova_exists(row.get("ipp"))
+
 # =========================================================
 # EXTRACT from database to array
 # =========================================================
-
 def load_data():
     # Test database connection
     connection = engine.connect()
@@ -416,6 +523,8 @@ def load_data():
     Tomo4 = sort_by_met_start(Tomo4)
     Tomo7 = sort_by_met_start(Tomo7)
     
+    check_existing_folders(Nova, Tomo2, Tomo4, Tomo7)
+
     return Nova, Tomo2, Tomo4, Tomo7
 
     
