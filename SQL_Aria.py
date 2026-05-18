@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QColor, QBrush
 from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt
 
 from pathlib import Path
 
@@ -300,77 +301,188 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
     # TOMO CACHE (LEVEL 1 ONLY)
     # =========================
     def build_cache(path):
+
+        cache = {}
+
         try:
             with os.scandir(path) as it:
-                return {entry.name for entry in it if entry.is_dir()}
+
+                for entry in it:
+
+                    if entry.is_dir():
+
+                        cache[entry.name] = entry.path
+
         except Exception as e:
             print(f"[CACHE ERROR] {path} -> {e}")
-            return set()
 
-    cache_Tomo2 = build_cache(network_path_Tomo2)
-    cache_Tomo4 = build_cache(network_path_Tomo4)
-    cache_Tomo7 = build_cache(network_path_Tomo7)
+        return cache
 
     # =========================
-    # NOVA CACHE (LEVEL 1 ONLY + YEAR FOLDER)
+    # NOVA CACHE
     # =========================
     def build_cache_nova(path):
+
+        cache = {}
+
         year_path = os.path.join(path, current_year)
 
         try:
             with os.scandir(year_path) as it:
-                return {entry.name for entry in it if entry.is_dir()}
+
+                for entry in it:
+
+                    if entry.is_dir():
+
+                        cache[entry.name] = entry.path
+
         except Exception as e:
             print(f"[NOVA CACHE ERROR] {year_path} -> {e}")
-            return set()
+
+        return cache
+
+    # =========================
+    # BUILD CACHES
+    # =========================
+    cache_Tomo2 = build_cache(network_path_Tomo2)
+    cache_Tomo4 = build_cache(network_path_Tomo4)
+    cache_Tomo7 = build_cache(network_path_Tomo7)
 
     cache_EC = build_cache_nova(network_path_Nova["EC"])
     cache_Hyperarc = build_cache_nova(network_path_Nova["Hyperarc"])
     cache_RA = build_cache_nova(network_path_Nova["RA"])
 
     # =========================
-    # MATCH FUNCTION
+    # FIND FOLDER IN CACHE
     # =========================
-    def folder_exists(cache, ipp):
+    def find_folder(cache, ipp):
+
         if not ipp:
-            return False
-        ipp = str(ipp).strip()
-        return any(ipp in name for name in cache)
+            return None, None
 
-    def nova_exists(ipp):
-        return (
-            folder_exists(cache_EC, ipp) or
-            folder_exists(cache_Hyperarc, ipp) or
-            folder_exists(cache_RA, ipp)
-        )
+        ipp = str(ipp).strip()
+
+        for folder_name, folder_path in cache.items():
+
+            if ipp in folder_name:
+
+                return folder_name, folder_path
+
+        return None, None
 
     # =========================
-    # TOMO2
+    # CHECK DICOM FILES
+    # =========================
+    def dicom_exists(folder_path):
+
+        if not folder_path:
+            return False
+
+        try:
+
+            for root, dirs, files in os.walk(folder_path):
+
+                for file in files:
+
+                    if file.lower().endswith(".dcm"):
+
+                        return True
+
+        except Exception as e:
+            print(f"[DICOM ERROR] {folder_path} -> {e}")
+
+        return False
+
+    # =========================
+    # PROCESS TOMO
+    # =========================
+    def process_tomo(table, cache):
+
+        for row in table:
+
+            folder_name, folder_path = find_folder(
+                cache,
+                row.get("ipp")
+            )
+
+            row["existing_folder"] = folder_name is not None
+            row["existing_dicom"] = dicom_exists(folder_path)
+
+            # mémorisation chemin trouvé
+            row["folder_name"] = folder_name
+            row["folder_path"] = folder_path
+
+    # =========================
+    # PROCESS NOVA
+    # =========================
+    def process_nova(table):
+
+        for row in table:
+
+            ipp = row.get("ipp")
+
+            folder_name = None
+            folder_path = None
+            machine = None
+
+            # =========================
+            # EC
+            # =========================
+            folder_name, folder_path = find_folder(cache_EC, ipp)
+
+            if folder_name:
+                machine = "EC"
+
+            # =========================
+            # HYPERARC
+            # =========================
+            if not folder_name:
+
+                folder_name, folder_path = find_folder(
+                    cache_Hyperarc,
+                    ipp
+                )
+
+                if folder_name:
+                    machine = "Hyperarc"
+
+            # =========================
+            # RA
+            # =========================
+            if not folder_name:
+
+                folder_name, folder_path = find_folder(
+                    cache_RA,
+                    ipp
+                )
+
+                if folder_name:
+                    machine = "RA"
+
+            row["existing_folder"] = folder_name is not None
+            row["existing_dicom"] = dicom_exists(folder_path)
+
+            # =========================
+            # MEMORISATION
+            # =========================
+            row["folder_name"] = folder_name
+            row["folder_path"] = folder_path
+            row["nova_machine"] = machine
+
+    # =========================
+    # EXECUTION
     # =========================
     print("Explore folder Tomo2")
-    for row in Tomo2:
-        row["existing_folder"] = folder_exists(cache_Tomo2, row.get("ipp"))
+    process_tomo(Tomo2, cache_Tomo2)
 
-    # =========================
-    # TOMO4
-    # =========================
     print("Explore folder Tomo4")
-    for row in Tomo4:
-        row["existing_folder"] = folder_exists(cache_Tomo4, row.get("ipp"))
+    process_tomo(Tomo4, cache_Tomo4)
 
-    # =========================
-    # TOMO7
-    # =========================
     print("Explore folder Tomo7")
-    for row in Tomo7:
-        row["existing_folder"] = folder_exists(cache_Tomo7, row.get("ipp"))
+    process_tomo(Tomo7, cache_Tomo7)
 
-    # =========================
-    # NOVA
-    # =========================
     print("Explore folder Nova")
-    for row in Nova:
-        row["existing_folder"] = nova_exists(row.get("ipp"))
+    process_nova(Nova)
 
 # =========================================================
 # EXTRACT from database to array
@@ -614,7 +726,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
 
         table = QTableWidget()
-        table.setColumnCount(7)
+        table.setColumnCount(10)
 
         table.setHorizontalHeaderLabels([
             "Status",
@@ -623,7 +735,10 @@ class MainWindow(QMainWindow):
             "IPP",
             "Task",
             "Task Status",
-            "Note"
+            "Note",
+            "Folder",
+            "Dicom",
+            "Adress"
         ])
 
         table.setRowCount(len(data))
@@ -666,6 +781,32 @@ class MainWindow(QMainWindow):
             else:
                 dot = "🟢"
 
+
+           # =========================
+            # ICONS
+            # =========================
+            folder_ok = patient.get("existing_folder", False)
+            dicom_ok = patient.get("existing_dicom", False)
+
+            folder_icon = "✅" if folder_ok else "❌"
+            dicom_icon = "✅" if dicom_ok else "❌"
+
+            # =========================
+            # ADRESS DISPLAY
+            # =========================
+            folder_path = str(patient.get("folder_path") or "")
+
+            adress = ""
+
+            if "Hyperarc" in folder_path:
+                adress = "Hyperarc"
+
+            elif "EC_IUC" in folder_path:
+                adress = "EC"
+
+            elif "Patients_RA" in folder_path:
+                adress = "RA"
+
             # =========================
             # CREATE ITEMS
             # =========================
@@ -677,10 +818,33 @@ class MainWindow(QMainWindow):
             item5 = QTableWidgetItem(str(patient["task_status"]))
             item6 = QTableWidgetItem(str(patient.get("task_note") or ""))
 
+            # nouvelles colonnes
+            item7 = QTableWidgetItem(folder_icon)
+            item8 = QTableWidgetItem(dicom_icon)
+            item9 = QTableWidgetItem(adress)
+
+            # =========================
+            # CENTER ICONS
+            # =========================
+            item7.setTextAlignment(Qt.AlignCenter)
+            item8.setTextAlignment(Qt.AlignCenter)
+            item9.setTextAlignment(Qt.AlignCenter)
+
             # =========================
             # TOOLTIP + COLOR (sur toute la ligne)
             # =========================
-            items = [item0, item1, item2, item3, item4, item5, item6]
+            items = [
+    item0,
+    item1,
+    item2,
+    item3,
+    item4,
+    item5,
+    item6,
+    item7,
+    item8,
+    item9
+]
             for i in items:
                 i.setBackground(QBrush(color))
                 i.setToolTip(tooltip)
@@ -695,6 +859,9 @@ class MainWindow(QMainWindow):
             table.setItem(row, 4, item4)
             table.setItem(row, 5, item5)
             table.setItem(row, 6, item6)
+            table.setItem(row, 7, item7)
+            table.setItem(row, 8, item8)
+            table.setItem(row, 9, item9)
 
 
         table.resizeColumnsToContents()
