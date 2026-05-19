@@ -544,11 +544,13 @@ def load_daily_qa(session):
     return qa_rows
 
 # =========================================================
-# FILTER QA FOR TODAY ONLY
+# FILTER QA FOR TODAY AND FUTURE ONLY
 # =========================================================
 def filter_today_qa(QA):
 
-    today_start = datetime.now().replace(
+    now = datetime.now()
+
+    today_start = now.replace(
         hour=0,
         minute=0,
         second=0,
@@ -566,10 +568,32 @@ def filter_today_qa(QA):
         if not met_date:
             continue
 
-        if today_start <= met_date < today_end:
+        # =========================
+        # STATUS FILTER
+        # =========================
+        task_status = str(row.get("task_status") or "").lower()
+
+        if task_status != "arrived":
+            continue
+
+        # =========================
+        # KEEP ONLY:
+        # - TODAY
+        # - FUTURE HOURS
+        # =========================
+        if (
+            today_start <= met_date < today_end
+            and met_date >= now
+        ):
+
             filtered.append(row)
 
-    print("QA TODAY:", len(filtered))
+    # =========================
+    # SORT BY TIME
+    # =========================
+    filtered.sort(key=lambda x: x["met_start"])
+
+    print("QA TODAY FUTURE:", len(filtered))
 
     return filtered
 
@@ -747,6 +771,30 @@ def load_data():
 # =====================================================
 
 class MainWindow(QMainWindow):
+    # =====================================================
+    # UPDATE QA HEADER
+    # =====================================================
+    def update_qa_header(self, QA):
+
+        if not QA:
+            self.qa_label.setText("Aucun CQ Physique aujourd'hui")
+            return
+
+        lines = []
+
+        for row in QA:
+
+            dt = row.get("met_start")
+
+            hour = dt.strftime("%H:%M") if dt else "--:--"
+
+            machine = row.get("machine", "")
+
+            lines.append(f"{hour} - {machine}")
+
+        text = "CQ Physique du jour :   " + "   |   ".join(lines)
+
+        self.qa_label.setText(text)
 
     def refresh_data(self):
         global Tomo2, Tomo4, Tomo7, Nova, QA
@@ -760,6 +808,7 @@ class MainWindow(QMainWindow):
 
         # reload data
         Nova, Tomo2, Tomo4, Tomo7, QA = load_data()
+        self.update_qa_header(QA)
 
         # puis update UI
         self.tabs.clear()
@@ -768,7 +817,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.create_table_tab(Tomo4), "Tomo4")
         self.tabs.addTab(self.create_table_tab(Tomo7), "Tomo7")
         self.tabs.addTab(self.create_table_tab(Nova), "Nova(s)")
-        self.tabs.addTab(self.create_table_tab(QA), "QA")
 
         # =========================
         # RESTORE TAB
@@ -789,11 +837,39 @@ class MainWindow(QMainWindow):
         self.now = datetime.now()
         self.limit = add_business_days(self.now, 2)
 
+        
         # =========================
-        # UI ROOT TABS
+        # ROOT WIDGET
+        # =========================
+        root = QWidget()
+        root_layout = QVBoxLayout()
+
+        # =========================
+        # QA LABEL
+        # =========================
+        self.qa_label = QLabel()
+        self.qa_label.setStyleSheet("""
+            QLabel {
+                background-color: #FFF3CD;
+                border: 1px solid #FFCC00;
+                padding: 8px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+        """)
+
+        root_layout.addWidget(self.qa_label)
+
+        # =========================
+        # TABS
         # =========================
         self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
+
+        root_layout.addWidget(self.tabs)
+
+        root.setLayout(root_layout)
+
+        self.setCentralWidget(root)
 
         # =========================
         # STATUS BAR
