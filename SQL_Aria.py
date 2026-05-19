@@ -237,6 +237,7 @@ session.close()
 
 
 """
+
 # =========================================================
 # Function to sort patients by MET appointment start date (with None at the end).git --version
 
@@ -484,6 +485,94 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
     print("Explore folder Nova")
     process_nova(Nova)
 
+
+
+# =========================================================
+# LOAD DAILY QA TASKS
+# =========================================================
+def load_daily_qa(session):
+
+    qa_rows = []
+
+    appointments = (
+        session.query(Appointments)
+        .join(Patients)
+        .options(joinedload(Appointments.patient))
+        .filter(
+            Appointments.service_type.ilike("%cq physique%")
+        )
+        .all()
+    )
+
+    print("CQ APPOINTMENTS:", len(appointments))
+
+    for appt in appointments:
+
+        patient = (
+            session.query(Patients)
+            .filter(Patients.id == appt.patient_id)
+            .first()
+        )
+
+        qa_rows.append({
+
+            "machine": appt.device,
+
+            "task_display_focus": appt.service_type,
+
+            "task_status": appt.status,
+
+            "task_note": appt.comment or "",
+
+            "met_start": appt.start_scheduled_period,
+
+            "last_name": patient.family_name_official,
+
+            "first_name": patient.given,
+
+            "ipp": patient.ipp,
+
+            "existing_folder": False,
+
+            "existing_dicom": False,
+
+            "folder_path": ""
+        })
+
+    print("QA ROWS:", len(qa_rows))
+
+    return qa_rows
+
+# =========================================================
+# FILTER QA FOR TODAY ONLY
+# =========================================================
+def filter_today_qa(QA):
+
+    today_start = datetime.now().replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
+    today_end = today_start + timedelta(days=1)
+
+    filtered = []
+
+    for row in QA:
+
+        met_date = row.get("met_start")
+
+        if not met_date:
+            continue
+
+        if today_start <= met_date < today_end:
+            filtered.append(row)
+
+    print("QA TODAY:", len(filtered))
+
+    return filtered
+
 # =========================================================
 # EXTRACT from database to array
 # =========================================================
@@ -570,6 +659,13 @@ def load_data():
                         "met_status": met_appt.status if met_appt else None,
                     })
 
+
+    # =========================================================
+    # LOAD QA
+    # =========================================================
+    QA = load_daily_qa(session)
+    QA = filter_today_qa(QA)
+
     session.close()
 
     print("\nROWS RAW:")
@@ -585,6 +681,7 @@ def load_data():
     Tomo2 = []
     Tomo4 = []
     Tomo7 = []
+    
 
     for row in rows:
 
@@ -637,7 +734,7 @@ def load_data():
     
     check_existing_folders(Nova, Tomo2, Tomo4, Tomo7)
 
-    return Nova, Tomo2, Tomo4, Tomo7
+    return Nova, Tomo2, Tomo4, Tomo7, QA
 
     
 
@@ -652,7 +749,7 @@ def load_data():
 class MainWindow(QMainWindow):
 
     def refresh_data(self):
-        global Tomo2, Tomo4, Tomo7, Nova
+        global Tomo2, Tomo4, Tomo7, Nova, QA
         self.now = datetime.now()
         self.limit = add_business_days(self.now, 2)
 
@@ -662,7 +759,7 @@ class MainWindow(QMainWindow):
         current_index = self.tabs.currentIndex()
 
         # reload data
-        Nova, Tomo2, Tomo4, Tomo7 = load_data()
+        Nova, Tomo2, Tomo4, Tomo7, QA = load_data()
 
         # puis update UI
         self.tabs.clear()
@@ -671,6 +768,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.create_table_tab(Tomo4), "Tomo4")
         self.tabs.addTab(self.create_table_tab(Tomo7), "Tomo7")
         self.tabs.addTab(self.create_table_tab(Nova), "Nova(s)")
+        self.tabs.addTab(self.create_table_tab(QA), "QA")
 
         # =========================
         # RESTORE TAB
