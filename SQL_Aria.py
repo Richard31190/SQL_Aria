@@ -60,7 +60,7 @@ dotenv_path = os.path.join(base_path, "ATT70966.env")
 load_dotenv(dotenv_path)
 
 # Time range used for the search
-one_week_ago = datetime.now() - timedelta(days=7)
+two_weeks_ago = datetime.now() - timedelta(days=14)
 
 # Read environment variables
 db_user = os.getenv("DATABASE_USER")
@@ -649,7 +649,7 @@ def load_data():
                 Tasks.display_focus.ilike("réalisation des cq%"),
                 Tasks.display_focus.ilike("replanif%")
             ),
-            Tasks.last_updated >= one_week_ago,
+            Tasks.last_updated >= two_weeks_ago,
             Tasks.status.ilike("ready")
         )
         .options(
