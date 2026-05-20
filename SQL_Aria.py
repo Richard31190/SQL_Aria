@@ -269,7 +269,11 @@ def add_business_days(start_date, days):
 
     return current
 
-
+def clean_cq_rows(rows):
+    return [
+        r for r in rows
+        if str(r.get("task_status") or "").lower() not in ["completed", "draft"]
+    ]
 
 
 # =========================================================
@@ -642,7 +646,8 @@ def load_data():
         .filter(
             or_(
                 Tasks.display_focus.ilike("réalisation du cq%"),
-                Tasks.display_focus.ilike("réalisation des cq%")
+                Tasks.display_focus.ilike("réalisation des cq%"),
+                Tasks.display_focus.ilike("replanif%")
             ),
             Tasks.last_updated >= one_week_ago,
             Tasks.status.ilike("ready")
@@ -669,6 +674,7 @@ def load_data():
                     and (
                         task.display_focus.lower().startswith("réalisation du cq")
                         or task.display_focus.lower().startswith("réalisation des cq")
+                        or task.display_focus.lower().startswith("replanif")
                     )
                 ):
 
@@ -718,6 +724,9 @@ def load_data():
     QA = filter_today_qa(QA)
 
     session.close()
+
+    rows = clean_cq_rows(rows)
+
 
     print("\nROWS RAW:")
     print(rows)
