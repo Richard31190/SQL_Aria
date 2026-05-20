@@ -499,7 +499,18 @@ def load_daily_qa(session):
         .join(Patients)
         .options(joinedload(Appointments.patient))
         .filter(
-            Appointments.service_type.ilike("%cq physique%")
+            or_(
+                # NOVA
+                Appointments.service_type.ilike("%cq physique%"),
+
+                # TOMO
+                (
+                    Appointments.service_type.ilike("%cq patient%")
+                    &
+                    Appointments.device.in_(["TOMO 2", "Tomo4", "RADI 7", "0210462", "0210471"])
+                )
+            ),
+            ~Appointments.device.ilike("HALCYON%")
         )
         .all()
     )
@@ -526,9 +537,13 @@ def load_daily_qa(session):
 
             "met_start": appt.start_scheduled_period,
 
+            "met_end": appt.end_scheduled_period,
+
             "last_name": patient.family_name_official,
 
             "first_name": patient.given,
+
+            "service_type": appt.service_type,
 
             "ipp": patient.ipp,
 
@@ -544,7 +559,7 @@ def load_daily_qa(session):
     return qa_rows
 
 # =========================================================
-# FILTER QA FOR TODAY AND FUTURE ONLY
+# FILTER QA FOR TODAY + CURRENT + FUTURE
 # =========================================================
 def filter_today_qa(QA):
 
@@ -563,9 +578,10 @@ def filter_today_qa(QA):
 
     for row in QA:
 
-        met_date = row.get("met_start")
+        met_start = row.get("met_start")
+        met_end = row.get("met_end")
 
-        if not met_date:
+        if not met_start:
             continue
 
         # =========================
@@ -573,27 +589,37 @@ def filter_today_qa(QA):
         # =========================
         task_status = str(row.get("task_status") or "").lower()
 
-        if task_status != "arrived":
+        if task_status not in ["booked", "arrived"]:
             continue
 
         # =========================
-        # KEEP ONLY:
-        # - TODAY
-        # - FUTURE HOURS
+        # ONLY TODAY
         # =========================
-        if (
-            today_start <= met_date < today_end
-            and met_date >= now
-        ):
+        if not (today_start <= met_start < today_end):
+            continue
 
+        # =========================
+        # KEEP:
+        # - FUTURE SLOT
+        # - CURRENT SLOT
+        # =========================
+        is_future = met_start >= now
+
+        is_current = (
+            met_start <= now
+            and met_end
+            and now <= met_end
+        )
+
+        if is_future or is_current:
             filtered.append(row)
 
     # =========================
-    # SORT BY TIME
+    # SORT BY START TIME
     # =========================
     filtered.sort(key=lambda x: x["met_start"])
 
-    print("QA TODAY FUTURE:", len(filtered))
+    print("QA TODAY CURRENT/FUTURE:", len(filtered))
 
     return filtered
 
@@ -780,19 +806,47 @@ class MainWindow(QMainWindow):
             self.qa_label.setText("Aucun CQ Physique aujourd'hui")
             return
 
+        now = datetime.now()
+
         lines = []
 
         for row in QA:
 
-            dt = row.get("met_start")
+            met_start = row.get("met_start")
+            met_end = row.get("met_end")
 
-            hour = dt.strftime("%H:%M") if dt else "--:--"
+            hour = met_start.strftime("%H:%M") if met_start else "--:--"
 
             machine = row.get("machine", "")
+            service = row.get("service_type", "")
 
-            lines.append(f"{hour} - {machine}")
+            # =========================
+            # CURRENT SLOT ?
+            # =========================
+            is_current = (
+                met_start
+                and met_end
+                and met_start <= now <= met_end
+            )
 
-        text = "CQ Physique du jour :   " + "   |   ".join(lines)
+            if is_current:
+
+                line = (
+                    f'<span style="color:red;">'
+                    f'{hour} - {machine}'
+                    f'</span>'
+                )
+
+            else:
+
+                line = f"{hour} - {machine}"
+
+            lines.append(line)
+
+        text = (
+            "Prochains créneaux CQ :   "
+            + "   |   ".join(lines)
+        )
 
         self.qa_label.setText(text)
 
