@@ -4,6 +4,7 @@
 # Ce script se connecte à la base de données, extrait les tâches de réalisation des CQ prêtes et les appointments MET associés, 
 # puis affiche le tout dans une interface Qt avec un code couleur selon la proximité de l'appointment MET.
 # Les données sont rafraîchies automatiquement toutes les 3 minutes pour rester à jour.
+# La recherche des CQ Physique ou patient est effectuée 14 jours avant la MET et après la MET
 # Note
 # pour faire le .exe : 
 """
@@ -29,6 +30,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, joinedload
 from sqlalchemy import or_
+from sqlalchemy import func
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -238,6 +240,12 @@ session.close()
 
 
 """
+
+def get_last_database_update(session):
+
+    return session.query(
+        func.max(Tasks.last_updated)
+    ).scalar()
 
 # =========================================================
 # Function to sort patients by MET appointment start date (with None at the end).git --version
@@ -890,7 +898,12 @@ class MainWindow(QMainWindow):
         # =========================
         # UPDATE LAST REFRESH TIME
         # =========================
+        session = SessionLocal()
+        last_db_update = get_last_database_update(session)
+        session.close()
         self.last_refresh_label.setText(f"Dernier refresh (3 min) : {self.now.strftime('%Y-%m-%d %H:%M:%S')}")
+        self.db_label.setText(f"SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
+)
 
     def __init__(self):
         super().__init__()
@@ -943,7 +956,9 @@ class MainWindow(QMainWindow):
 
         self.last_refresh_label = QLabel("Dernier refresh : -")
         self.status_bar.addPermanentWidget(self.last_refresh_label)
-        
+        self.db_label = QLabel("DB : -")
+        self.status_bar.addPermanentWidget(self.db_label)
+
         # =========================
         # FIRST LOAD
         # =========================
