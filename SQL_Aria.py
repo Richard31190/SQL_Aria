@@ -1,8 +1,9 @@
 ﻿# =========================================================
+# Richard BOISSERON
 # Dashboard de suivi des CQ
 # Ce script se connecte à la base de données, extrait les tâches de réalisation des CQ prêtes et les appointments MET associés, 
 # puis affiche le tout dans une interface Qt avec un code couleur selon la proximité de l'appointment MET.
-# Les données sont rafraîchies automatiquement toutes les 30 secondes pour rester à jour.
+# Les données sont rafraîchies automatiquement toutes les 3 minutes pour rester à jour.
 # Note
 # pour faire le .exe : 
 """
@@ -880,7 +881,7 @@ class MainWindow(QMainWindow):
         # =========================
         # UPDATE LAST REFRESH TIME
         # =========================
-        self.last_refresh_label.setText(f"Dernier refresh (30 sec) : {self.now.strftime('%Y-%m-%d %H:%M:%S')}")
+        self.last_refresh_label.setText(f"Dernier refresh (3 min) : {self.now.strftime('%Y-%m-%d %H:%M:%S')}")
 
     def __init__(self):
         super().__init__()
@@ -944,7 +945,7 @@ class MainWindow(QMainWindow):
         # =========================
         self.timer = QTimer()
         self.timer.timeout.connect(self.refresh_data)
-        self.timer.start(30_000)  # 30 sec
+        self.timer.start(180_000)  # 3 minutes
 
         
 
