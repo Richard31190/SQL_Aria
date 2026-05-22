@@ -885,10 +885,25 @@ class MainWindow(QMainWindow):
         # puis update UI
         self.tabs.clear()
 
-        self.tabs.addTab(self.create_table_tab(Tomo2), "Tomo2")
-        self.tabs.addTab(self.create_table_tab(Tomo4), "Tomo4")
-        self.tabs.addTab(self.create_table_tab(Tomo7), "Tomo7")
-        self.tabs.addTab(self.create_table_tab(Nova), "Nova(s)")
+        self.tabs.addTab(
+            self.create_table_tab(Tomo2),
+            f"Tomo2 ({len(Tomo2)})"
+        )
+
+        self.tabs.addTab(
+            self.create_table_tab(Tomo4),
+            f"Tomo4 ({len(Tomo4)})"
+        )
+
+        self.tabs.addTab(
+            self.create_table_tab(Tomo7),
+            f"Tomo7 ({len(Tomo7)})"
+        )
+
+        self.tabs.addTab(
+            self.create_table_tab(Nova),
+            f"Nova(s) ({len(Nova)})"
+        )
 
         # =========================
         # RESTORE TAB
