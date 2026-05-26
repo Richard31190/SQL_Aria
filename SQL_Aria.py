@@ -694,13 +694,25 @@ def load_data():
                     # récupérer appointment MET associé (si existe)
                     met_appt = None
 
-                    for appointment in patient.appointments:
+                    # récupérer les appointments MET valides
+                    met_appointments = [
+                        appt for appt in patient.appointments
                         if (
-                            appointment.service_type
-                            and appointment.service_type.upper().startswith("MET")
-                        ):
-                            met_appt = appointment
-                            break
+                            appt.service_type
+                            and appt.service_type.upper().startswith("MET")
+                            and appt.start_scheduled_period
+                            and str(appt.status or "").lower() != "cancelled"
+                        )
+                    ]
+
+                    # prendre la MET la plus récente
+                    met_appt = None
+
+                    if met_appointments:
+                        met_appt = max(
+                            met_appointments,
+                            key=lambda x: x.start_scheduled_period
+                        )
 
                     # ajouter une ligne structurée
                     rows.append({
