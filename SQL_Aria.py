@@ -83,7 +83,7 @@ DATABASE_URL = (
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
 
-
+#region InfoAria
 """
 # =========================
 # FULL DUMP FUNCTION (if needed, in order to see all available patient data)
@@ -237,9 +237,9 @@ def dump_patient_full(session, ipp: str):
 session = SessionLocal()
 dump_patient_full(session, "201803581")
 session.close()
-
-
 """
+#endregion
+
 
 def get_last_database_update(session):
 
@@ -499,6 +499,60 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
     process_nova(Nova)
 
 
+# =========================================================
+# Load machine END OF ACTIVITY schedule
+# =========================================================
+def load_machine_schedule(session):
+
+    today_start = datetime.now().replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    today_end = today_start + timedelta(days=1)
+
+    rows = []
+
+    opening_closing = (
+        session.query(Appointments)
+        .join(Patients)
+        .options(joinedload(Appointments.patient))
+        .filter(
+            Appointments.service_type.ilike("Implant"),
+            Appointments.device.in_([
+                "TOMO 2",
+                "Tomo4",
+                "RADI 7",
+                "0210462",
+                "0210471",
+                "NOVA3",
+                "NOVA5",
+                "HALCYON6",
+                "HALCYON8"
+            ]),
+            Appointments.start_scheduled_period >= today_start,
+            Appointments.start_scheduled_period < today_end
+        )
+        .all()
+    )
+
+    for appt in opening_closing:
+
+        print(
+            "FOUND:",
+            appt.service_type,
+            appt.device,
+            appt.start_scheduled_period
+        )
+        patient = appt.patient
+
+        rows.append({
+            "machine": appt.device,
+            "start": appt.start_scheduled_period,
+            "end": appt.end_scheduled_period,
+            "status": appt.status,
+            "note": appt.comment or ""
+        })
+
+    return rows
 
 # =========================================================
 # LOAD DAILY QA TASKS
@@ -568,7 +622,7 @@ def load_daily_qa(session):
         })
 
     print("QA ROWS:", len(qa_rows))
-
+    
     return qa_rows
 
 # =========================================================
@@ -714,12 +768,44 @@ def load_data():
                             key=lambda x: x.start_scheduled_period
                         )
 
+                    # =========================================================
+                    # RECHERCHE FINALISATION DOSSIER
+                    # =========================================================
+                    finalisation_tasks = [
+                        t for cp in patient.careplans
+                        for t in cp.tasks
+                        if (
+                            t.display_focus
+                            and t.display_focus.lower().startswith("finalisation du dossier")
+                        )
+                    ]
+
+                    # prendre la plus récente
+                    latest_finalisation = None
+
+                    if finalisation_tasks:
+                        latest_finalisation = max(
+                            finalisation_tasks,
+                            key=lambda x: x.last_updated or datetime.min
+                        )
+
+                    # physicien
+                    physicist = None
+
+                    if latest_finalisation:
+                        physicist = (
+                            latest_finalisation.recipient
+                            or latest_finalisation.recipient_id
+                        )
+
                     # ajouter une ligne structurée
                     rows.append({
                         # PATIENT
                         "ipp": patient.ipp,
                         "last_name": patient.family_name_official,
                         "first_name": patient.given,
+                        "physicist": physicist,
+
 
                         # TASK
                         "task_display_focus": task.display_focus,
@@ -742,6 +828,7 @@ def load_data():
     # =========================================================
     QA = load_daily_qa(session)
     QA = filter_today_qa(QA)
+    MACHINE_SCHEDULE = load_machine_schedule(session)
 
     session.close()
 
@@ -814,7 +901,7 @@ def load_data():
     
     check_existing_folders(Nova, Tomo2, Tomo4, Tomo7)
 
-    return Nova, Tomo2, Tomo4, Tomo7, QA
+    return Nova, Tomo2, Tomo4, Tomo7, QA, MACHINE_SCHEDULE
 
     
 
@@ -830,6 +917,65 @@ class MainWindow(QMainWindow):
     # =====================================================
     # UPDATE QA HEADER
     # =====================================================
+    def update_machine_footer(self, schedule):
+        MACHINE_LABEL = {
+            "TOMO2": "Tomo 2",
+            "0210462": "Tomo 4",
+            "NOVA3": "Nova 3",
+            "NOVA5": "Nova 5",
+            "HALCYON6": "Halcyon 6",
+            "RADI7": "Radi 7",
+            "HALCYON8": "Halcyon 8",
+        }
+        ORDER = {
+            "TOMO2": 0,
+            "NOVA3": 1,
+            "0210462": 2,
+            "NOVA5": 3,
+            "HALCYON6": 4,
+            "RADI7": 5,
+            "HALCYON8": 6,
+        }
+
+        def normalize_machine(m):
+            if not m:
+                return ""
+            return m.upper().replace(" ", "").replace("-", "")
+
+        def get_priority(machine):
+            return ORDER.get(normalize_machine(machine), 999)
+
+        if not schedule:
+            self.machine_label.setText("Fin d'activité : aucune donnée")
+            return
+
+        schedule = sorted(
+            schedule,
+            key=lambda x: (
+                get_priority(x.get("machine")),
+                x.get("start") or datetime.max
+            )
+        )
+
+        lines = []
+
+        for row in schedule:
+
+            machine = row.get("machine", "")
+            start = row.get("start")
+
+            if not start:
+                continue
+
+            hour = start.strftime("%H:%M")
+            machine_key = normalize_machine(machine)
+            machine_label = MACHINE_LABEL.get(machine_key, machine_key)
+            lines.append(f"{machine_label}: {hour}")
+
+        text = "Fin d'activité :   " + "   |   ".join(lines)
+
+        self.machine_label.setText(text)
+  
     def update_qa_header(self, QA):
 
         if not QA:
@@ -891,8 +1037,9 @@ class MainWindow(QMainWindow):
         current_index = self.tabs.currentIndex()
 
         # reload data
-        Nova, Tomo2, Tomo4, Tomo7, QA = load_data()
+        Nova, Tomo2, Tomo4, Tomo7, QA, MACHINE_SCHEDULE = load_data()
         self.update_qa_header(QA)
+        self.update_machine_footer(MACHINE_SCHEDULE)
 
         # puis update UI
         self.tabs.clear()
@@ -961,8 +1108,21 @@ class MainWindow(QMainWindow):
                 font-weight: bold;
             }
         """)
-
         root_layout.addWidget(self.qa_label)
+
+        self.machine_label = QLabel()
+        self.machine_label.setStyleSheet("""
+            QLabel {
+                background-color: #E8F0FE;
+                border: 1px solid #4A90E2;
+                padding: 8px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+        """)
+
+        root_layout.addWidget(self.machine_label)
+
 
         # =========================
         # TABS
@@ -1006,7 +1166,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
 
         table = QTableWidget()
-        table.setColumnCount(10)
+        table.setColumnCount(11)
 
         table.setHorizontalHeaderLabels([
             "Status",
@@ -1014,6 +1174,7 @@ class MainWindow(QMainWindow):
             "Patient",
             "IPP",
             "Task",
+            "Physicist",
             "Task Status",
             "Note",
             "Folder",
@@ -1096,12 +1257,13 @@ class MainWindow(QMainWindow):
             item3 = QTableWidgetItem(str(patient["ipp"]))
             item4 = QTableWidgetItem(str(patient["task_display_focus"]))
             item5 = QTableWidgetItem(str(patient["task_status"]))
-            item6 = QTableWidgetItem(str(patient.get("task_note") or ""))
+            item_physicist = QTableWidgetItem(str(patient.get("physicist") or ""))
+            item7 = QTableWidgetItem(str(patient.get("task_note") or ""))
 
             # nouvelles colonnes
-            item7 = QTableWidgetItem(folder_icon)
-            item8 = QTableWidgetItem(dicom_icon)
-            item9 = QTableWidgetItem(adress)
+            item8 = QTableWidgetItem(folder_icon)
+            item9 = QTableWidgetItem(dicom_icon)
+            item10 = QTableWidgetItem(adress)
 
             # =========================
             # CENTER ICONS
@@ -1120,10 +1282,11 @@ class MainWindow(QMainWindow):
     item3,
     item4,
     item5,
-    item6,
+    item_physicist,
     item7,
     item8,
-    item9
+    item9,
+    item10
 ]
             for i in items:
                 i.setBackground(QBrush(color))
@@ -1138,10 +1301,11 @@ class MainWindow(QMainWindow):
             table.setItem(row, 3, item3)
             table.setItem(row, 4, item4)
             table.setItem(row, 5, item5)
-            table.setItem(row, 6, item6)
+            table.setItem(row, 6, item_physicist)
             table.setItem(row, 7, item7)
             table.setItem(row, 8, item8)
             table.setItem(row, 9, item9)
+            table.setItem(row, 10, item10)
 
 
         table.resizeColumnsToContents()
