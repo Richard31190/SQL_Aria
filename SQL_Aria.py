@@ -52,7 +52,7 @@ from pathlib import Path
 import sys
 
 # =========================================================
-# Configuration for databa access
+# Configuration for SQL databa access
 # =========================================================
 
 # Loading user information for database access
@@ -83,7 +83,7 @@ DATABASE_URL = (
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
 
-#region InfoAria
+#region Extraction de données complète (debug) - ID patient à adapter selon besoin
 """
 # =========================
 # FULL DUMP FUNCTION (if needed, in order to see all available patient data)
@@ -235,24 +235,24 @@ def dump_patient_full(session, ipp: str):
 # =========================================================
 # Get all data patient (DEBUG CALL)
 session = SessionLocal()
-dump_patient_full(session, "201803581")
+dump_patient_full(session, "202209726")
 session.close()
 """
 #endregion
 
 
 def get_last_database_update(session):
-
+    # =========================================================
+    # Récupère la date et l'heure de la dernière actualisation (partielle ou complète) de la base de données (pour info dans le dashboard))
+    # =========================================================
     return session.query(
         func.max(Tasks.last_updated)
     ).scalar()
 
-# =========================================================
-# Function to sort patients by MET appointment start date (with None at the end).git --version
-
-# =========================================================
 def sort_by_met_start(table):
-
+    # =========================================================
+    # Fonction pour ordonner les patients par date de MET
+    # =========================================================
     return sorted(
         table,
         key=lambda row: (
@@ -261,10 +261,10 @@ def sort_by_met_start(table):
         )
     )
 
-# =========================================================
-# Function to concider business days when adding days to a date (for better estimation of QA priority).
-# =========================================================
 def add_business_days(start_date, days):
+    # =========================================================
+    # Fonction pour exclure les week-ends dans le calcul des MET prioritaires
+    # =========================================================
     current = start_date
     added = 0
 
@@ -278,18 +278,18 @@ def add_business_days(start_date, days):
     return current
 
 def clean_cq_rows(rows):
+    # =========================================================
+    # Nettoie les données brutes extraites de la base de données pour ne garder que les tâches pertinentes (filtrage des tâches annulées, etc.)
+    # =========================================================
     return [
         r for r in rows
         if str(r.get("task_status") or "").lower() not in ["completed", "draft"]
     ]
 
-
-# =========================================================
-# Check if patient folder already exists on network
-# =========================================================
-
 def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
-
+    # =========================================================
+    # Recherche dans les dossiers réseaux IUCT l'existence de dossiers patients correspondant aux patients du jour, et vérifie la présence de fichiers DICOM (calculs) dans ces dossiers
+    # =========================================================
     import os
     from datetime import datetime
 
@@ -312,12 +312,10 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
     current_year = str(datetime.now().year)
 
     # =========================
-    # TOMO CACHE (LEVEL 1 ONLY)
+    # TOMO  (LEVEL 1 ONLY) - N'inspecte pas les sous dossiers
     # =========================
     def build_cache(path):
-
         cache = {}
-
         try:
             with os.scandir(path) as it:
 
@@ -333,12 +331,10 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
         return cache
 
     # =========================
-    # NOVA CACHE
+    # NOVA - Inspecte les sous dossiers
     # =========================
     def build_cache_nova(path):
-
         cache = {}
-
         year_path = os.path.join(path, current_year)
 
         try:
@@ -498,19 +494,19 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
     print("Explore folder Nova")
     process_nova(Nova)
 
-
-# =========================================================
-# Load machine END OF ACTIVITY schedule
-# =========================================================
 def load_machine_schedule(session):
-
+    # =========================================================
+    # Recherche dans la Database des appointments de type 'Implant' programmés aujourd'hui sur les machines concernées (TOMO 2, TOMO 4, RADI 7, NOVA3, NOVA5, HALCYON6, HALCYON8), 
+    # pour afficher les horaires de fin d'activité de la journée dans le dashboard
+    # =========================================================
+    # récupère la date du jour pour filtrer les appointments du jour
     today_start = datetime.now().replace(
         hour=0, minute=0, second=0, microsecond=0
     )
     today_end = today_start + timedelta(days=1)
 
+    # recherche les appointments du jour avec service_type 'Implant' sur les machines concernées
     rows = []
-
     opening_closing = (
         session.query(Appointments)
         .join(Patients)
@@ -554,11 +550,10 @@ def load_machine_schedule(session):
 
     return rows
 
-# =========================================================
-# LOAD DAILY QA TASKS
-# =========================================================
 def load_daily_qa(session):
-
+    # =========================================================
+    # LOAD DAILY QA TASKS
+    # =========================================================
     qa_rows = []
 
     appointments = (
@@ -625,11 +620,10 @@ def load_daily_qa(session):
     
     return qa_rows
 
-# =========================================================
-# FILTER QA FOR TODAY + CURRENT + FUTURE
-# =========================================================
 def filter_today_qa(QA):
-
+    # =========================================================
+    # FILTER QA FOR TODAY + CURRENT + FUTURE
+    # =========================================================
     now = datetime.now()
 
     today_start = now.replace(
@@ -690,17 +684,17 @@ def filter_today_qa(QA):
 
     return filtered
 
-# =========================================================
-# EXTRACT from database to array
-# =========================================================
 def load_data():
+    # =========================================================
+    # EXTRACT from database to array
+    # =========================================================
     # Test database connection
     connection = engine.connect()
     print("\nDatabase connection OK")
     connection.close()
 
+    # Recherche dans la Database des patients ayant des tâches de 'réalisation des CQ prêtes' en attente depuis moins de 14 jours
     session = SessionLocal()
-
     patients = (
         session.query(Patients)
         .join(Patients.careplans)
@@ -721,11 +715,9 @@ def load_data():
         .distinct()
         .all()
     )
-
     print(f"\nNumber of patients fetched: {len(patients)}")
 
     rows = []
-
     for patient in patients:
 
         for careplan in patient.careplans:
@@ -745,10 +737,11 @@ def load_data():
                     if "cancelled" in task_status:
                         continue
 
-                    # récupérer appointment MET associé (si existe)
+                    # =========================================================
+                    # RECHERCHE DES 'MET' ASSOCIÉS AU PATIENT (pour info et tri)
+                    # =========================================================
+                    # récupérer les MET valides
                     met_appt = None
-
-                    # récupérer les appointments MET valides
                     met_appointments = [
                         appt for appt in patient.appointments
                         if (
@@ -759,9 +752,8 @@ def load_data():
                         )
                     ]
 
-                    # prendre la MET la plus récente
+                    # prendre la MET la plus récente (car le patient peut avoir eu un traitement par le passé)
                     met_appt = None
-
                     if met_appointments:
                         met_appt = max(
                             met_appointments,
@@ -769,7 +761,7 @@ def load_data():
                         )
 
                     # =========================================================
-                    # RECHERCHE FINALISATION DOSSIER
+                    # RECHERCHE DE LA TACHE 'FINALISATION DOSSIER' => PHYSICIEN ou DOSIMETRISTE AYANT CRÉÉ LA TÂCHE CQ
                     # =========================================================
                     finalisation_tasks = [
                         t for cp in patient.careplans
@@ -782,23 +774,52 @@ def load_data():
 
                     # prendre la plus récente
                     latest_finalisation = None
-
                     if finalisation_tasks:
                         latest_finalisation = max(
                             finalisation_tasks,
                             key=lambda x: x.last_updated or datetime.min
                         )
 
-                    # physicien
+                    # récupération du nom du physicien ou du dosimétriste
                     physicist = None
-
                     if latest_finalisation:
                         physicist = (
                             latest_finalisation.recipient
                             or latest_finalisation.recipient_id
                         )
 
-                    # ajouter une ligne structurée
+
+                    # =========================================================
+                    # RECHERCHE PROGRAMMATION CQ PATIENT DANS TIMEPLANNER
+                    # =========================================================
+                    # récupère la date du jour pour filtrer les tâches du jour
+                    today_start = datetime.now().replace(
+                        hour=0,
+                        minute=0,
+                        second=0,
+                        microsecond=0
+                    )
+                    today_end = today_start + timedelta(days=1)
+
+                    # recherche les tâches du jour avec display_focus 'CQ Patient' (pour info et tri)
+                    cq_patient_today = False
+                    cq_patient_appts = [
+                        appt for appt in patient.appointments
+                        if (
+                            appt.service_type
+                            and appt.service_type.strip().lower() == "cq patient"
+                            and appt.start_scheduled_period
+                            and today_start <= appt.start_scheduled_period < today_end
+                            and str(appt.status or "").lower() != "cancelled"
+                        )
+                    ]
+
+                    if cq_patient_appts:
+                        cq_patient_today = True
+
+                    # =========================================================
+                    # MISE DANS UNE TABLE DES INFIRMATIONS COLLECTEES
+                    # =========================================================
                     rows.append({
                         # PATIENT
                         "ipp": patient.ipp,
@@ -806,6 +827,8 @@ def load_data():
                         "first_name": patient.given,
                         "physicist": physicist,
 
+                        # CQ PATIENT
+                        "cq_patient_today": cq_patient_today,
 
                         # TASK
                         "task_display_focus": task.display_focus,
@@ -833,23 +856,19 @@ def load_data():
     session.close()
 
     rows = clean_cq_rows(rows)
-
-
     print("\nROWS RAW:")
     print(rows)
 
        
 
     # =========================================================
-    # Sorting of patients according to the machine concerned for QA
+    # FILTRE LES PATIENTS PAR MACHINE CONCERNEE (TOMO 2, TOMO 4, TOMO 7, NOVA)
     # =========================================================
-
     Nova = []
     Tomo2 = []
     Tomo4 = []
     Tomo7 = []
     
-
     for row in rows:
 
         focus = row["task_display_focus"]
@@ -892,7 +911,7 @@ def load_data():
     print("Tomo7:", len(Tomo7))
 
     # =========================================================
-    # Sorted by chronological priority
+    # TRIE DES PATIENTS PAR ORDRE DE PRIORITÉ DE LA MET (MET la plus proche en premier, puis les autres, les patients sans MET à la fin)
     # =========================================================
     Nova = sort_by_met_start(Nova)
     Tomo2 = sort_by_met_start(Tomo2)
@@ -903,18 +922,9 @@ def load_data():
 
     return Nova, Tomo2, Tomo4, Tomo7, QA, MACHINE_SCHEDULE
 
-    
-
-
-
-
-
-# =====================================================
-# INTERFACE QT
-# =====================================================
-
 class MainWindow(QMainWindow):
     # =====================================================
+    # INTERFACE QT
     # UPDATE QA HEADER
     # =====================================================
     def update_machine_footer(self, schedule):
@@ -946,7 +956,7 @@ class MainWindow(QMainWindow):
             return ORDER.get(normalize_machine(machine), 999)
 
         if not schedule:
-            self.machine_label.setText("Fin d'activité : aucune donnée")
+            self.machine_label.setText("Fin de journée : aucune donnée")
             return
 
         schedule = sorted(
@@ -972,14 +982,14 @@ class MainWindow(QMainWindow):
             machine_label = MACHINE_LABEL.get(machine_key, machine_key)
             lines.append(f"{machine_label}: {hour}")
 
-        text = "Fin d'activité :   " + "   |   ".join(lines)
+        text = "Fin de journée :   " + "   |   ".join(lines)
 
         self.machine_label.setText(text)
   
     def update_qa_header(self, QA):
 
         if not QA:
-            self.qa_label.setText("Aucun CQ Physique aujourd'hui")
+            self.qa_label.setText("Aucun créneaux CQ trouvé aujourd'hui")
             return
 
         now = datetime.now()
@@ -1076,8 +1086,31 @@ class MainWindow(QMainWindow):
         last_db_update = get_last_database_update(session)
         session.close()
         self.last_refresh_label.setText(f"Dernier refresh (3 min) : {self.now.strftime('%Y-%m-%d %H:%M:%S')}")
-        self.db_label.setText(f"SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
-)
+        # =========================================================
+        # Code couleur sur l'indication du dernier refresh de la database SQL
+        # =========================================================
+        now = datetime.now()
+
+        if last_db_update:
+            delta_min = (now - last_db_update).total_seconds() / 60
+        else:
+            delta_min = None
+
+        if last_db_update is None:
+            color = "gray"
+            text = "Dernier refresh DataBase SQL : inconnu"
+
+        elif delta_min > 10:
+            color = "red"
+            text = f"Dernier refresh SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
+
+        else:
+            color = "green"
+            text = f"Dernier refresh SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
+
+        self.db_label.setText(
+            f'<span style="color:{color}; font-weight:bold;">{text}</span>'
+        )
 
     def __init__(self):
         super().__init__()
@@ -1166,7 +1199,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
 
         table = QTableWidget()
-        table.setColumnCount(11)
+        table.setColumnCount(12)
 
         table.setHorizontalHeaderLabels([
             "Status",
@@ -1177,12 +1210,32 @@ class MainWindow(QMainWindow):
             "Task Status",
             "Physicist / Dosimetrist",
             "Note",
+            "Time Planner",
             "Folder",
             "Dicom",
             "Adress"
         ])
 
-        table.setRowCount(len(data))
+        # info popup sur les headers
+        header_tooltips = [
+            "Priorité du dossier",
+            "Date MET prévue",
+            "Nom du patient",
+            "ID patient",
+            "Type de tâche CQ",
+            "Statut de la tâche",
+            "Personne ayant crée le CQ et fait les exports dicom",
+            "Note associée à la tâche",
+            "CQ Patient programmé pour aujourd'hui dans Timeplanner ?",
+            "Dossier patient existant sur le réseau IUCT ?",
+            "Fichiers DICOM (calculs) présents dans le dossier ?",
+            "Nom du dossier où le calcul à été exporté"
+        ]
+
+        for col in range(len(header_tooltips)):
+            table.horizontalHeaderItem(col).setToolTip(header_tooltips[col])
+        
+            table.setRowCount(len(data))
 
         for row, patient in enumerate(data):
 
@@ -1228,9 +1281,11 @@ class MainWindow(QMainWindow):
             # =========================
             folder_ok = patient.get("existing_folder", False)
             dicom_ok = patient.get("existing_dicom", False)
+            cq_patient_ok = patient.get("cq_patient_today", False)
 
             folder_icon = "✅" if folder_ok else "❌"
             dicom_icon = "✅" if dicom_ok else "❌"
+            cq_patient_icon = "✅" if cq_patient_ok else "❌"
 
             # =========================
             # ADRESS DISPLAY
@@ -1259,6 +1314,7 @@ class MainWindow(QMainWindow):
             item5 = QTableWidgetItem(str(patient["task_status"]))
             item_physicist = QTableWidgetItem(str(patient.get("physicist") or ""))
             item7 = QTableWidgetItem(str(patient.get("task_note") or ""))
+            item_cq_patient = QTableWidgetItem(cq_patient_icon)
 
             # nouvelles colonnes
             item8 = QTableWidgetItem(folder_icon)
@@ -1271,6 +1327,7 @@ class MainWindow(QMainWindow):
             item7.setTextAlignment(Qt.AlignCenter)
             item8.setTextAlignment(Qt.AlignCenter)
             item9.setTextAlignment(Qt.AlignCenter)
+            item_cq_patient.setTextAlignment(Qt.AlignCenter)
 
             # =========================
             # TOOLTIP + COLOR (sur toute la ligne)
@@ -1284,6 +1341,7 @@ class MainWindow(QMainWindow):
     item5,
     item_physicist,
     item7,
+    item_cq_patient,
     item8,
     item9,
     item10
@@ -1303,9 +1361,10 @@ class MainWindow(QMainWindow):
             table.setItem(row, 5, item5)
             table.setItem(row, 6, item_physicist)
             table.setItem(row, 7, item7)
-            table.setItem(row, 8, item8)
-            table.setItem(row, 9, item9)
-            table.setItem(row, 10, item10)
+            table.setItem(row, 8, item_cq_patient)
+            table.setItem(row, 9, item8)
+            table.setItem(row, 10, item9)
+            table.setItem(row, 11, item10)
 
 
         table.resizeColumnsToContents()
@@ -1314,8 +1373,6 @@ class MainWindow(QMainWindow):
         widget.setLayout(layout)
 
         return widget
-
-
 
 # =====================================================
 # LANCEMENT APPLICATION
