@@ -927,6 +927,42 @@ class MainWindow(QMainWindow):
     # INTERFACE QT
     # UPDATE QA HEADER
     # =====================================================
+    def toggle_db_blink(self):
+        # Clignottement du message d'alerte de la database SQL en cas de délai de refresh trop long (indication visuelle pour l'utilisateur)
+        if not hasattr(self, "db_alert_level"):
+            return
+
+        if self.db_alert_level != "critical":
+            return
+
+        self.blink_state = not self.blink_state
+
+        if self.blink_state:
+
+            self.db_label.setStyleSheet("""
+                QLabel {
+                    color: white;
+                    background-color: red;
+                    font-weight: bold;
+                    padding-left: 5px;
+                    padding-right: 5px;
+                    min-width: 320px;
+                }
+            """)
+
+        else:
+
+            self.db_label.setStyleSheet("""
+                QLabel {
+                    color: red;
+                    background-color: #2b2b2b;
+                    font-weight: bold;
+                    padding-left: 5px;
+                    padding-right: 5px;
+                    min-width: 320px;
+                }
+            """)
+
     def update_machine_footer(self, schedule):
         MACHINE_LABEL = {
             "TOMO2": "Tomo 2",
@@ -1086,8 +1122,9 @@ class MainWindow(QMainWindow):
         last_db_update = get_last_database_update(session)
         session.close()
         self.last_refresh_label.setText(f"Dernier refresh (3 min) : {self.now.strftime('%Y-%m-%d %H:%M:%S')}")
+        
         # =========================================================
-        # Code couleur sur l'indication du dernier refresh de la database SQL
+        # Code couleur + clignottement sur l'indication du dernier refresh de la database SQL
         # =========================================================
         now = datetime.now()
 
@@ -1096,21 +1133,88 @@ class MainWindow(QMainWindow):
         else:
             delta_min = None
 
+        # =========================
+        # UNKNOWN
+        # =========================
         if last_db_update is None:
-            color = "gray"
-            text = "Dernier refresh DataBase SQL : inconnu"
 
+            self.db_alert_level = "unknown"
+
+            self.db_label.setText(
+                "⚪ SQL DataBase : inconnue"
+            )
+
+            self.db_label.setStyleSheet("""
+                QLabel {
+                    color: gray;
+                    font-weight: bold;
+                }
+            """)
+
+        # =========================
+        # CRITICAL > 15 min
+        # =========================
+        elif delta_min > 15:
+
+            self.db_alert_level = "critical"
+
+            self.db_label.setText(
+                f"🔴 SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+        # =========================
+        # ALERT > 10 min
+        # =========================
         elif delta_min > 10:
-            color = "red"
-            text = f"Dernier refresh SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
 
+            self.db_alert_level = "alert"
+
+            self.db_label.setText(
+                f"🔴 SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+            self.db_label.setStyleSheet("""
+                QLabel {
+                    color: red;
+                    font-weight: bold;
+                }
+            """)
+
+        # =========================
+        # WARNING > 5 min
+        # =========================
+        elif delta_min > 5:
+
+            self.db_alert_level = "warning"
+
+            self.db_label.setText(
+                f"🟠 SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+            self.db_label.setStyleSheet("""
+                QLabel {
+                    color: orange;
+                    font-weight: bold;
+                }
+            """)
+
+        # =========================
+        # OK
+        # =========================
         else:
-            color = "green"
-            text = f"Dernier refresh SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
 
-        self.db_label.setText(
-            f'<span style="color:{color}; font-weight:bold;">{text}</span>'
-        )
+            self.db_alert_level = "ok"
+
+            self.db_label.setText(
+                f"🟢 SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+            self.db_label.setStyleSheet("""
+                QLabel {
+                    color: green;
+                    font-weight: bold;
+                }
+            """)
 
     def __init__(self):
         super().__init__()
@@ -1177,6 +1281,7 @@ class MainWindow(QMainWindow):
         self.last_refresh_label = QLabel("Dernier refresh : -")
         self.status_bar.addPermanentWidget(self.last_refresh_label)
         self.db_label = QLabel("DB : -")
+        self.db_label.setMinimumWidth(320)
         self.status_bar.addPermanentWidget(self.db_label)
 
         # =========================
@@ -1191,6 +1296,14 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.refresh_data)
         self.timer.start(180_000)  # 3 minutes
 
+        # =========================
+        # BLINK TIMER SQL STATUS
+        # =========================
+        self.blink_state = False
+
+        self.blink_timer = QTimer()
+        self.blink_timer.timeout.connect(self.toggle_db_blink)
+        self.blink_timer.start(500)  # 500 ms
         
 
     def create_table_tab(self, data):
