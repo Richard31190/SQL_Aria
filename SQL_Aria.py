@@ -112,12 +112,15 @@ def dump_patient_full(session, ipp: str):
     # =========================
     print("\n================ PATIENT ================")
     print("ID:", patient.id)
-    print("IPP:", patient.ipp)
-    print("Name:", patient.family_name_official)
+    print("family name official:", patient.family_name_official)
     print("Given:", patient.given)
-    print("Gender:", patient.gender)
     print("Birth date:", patient.birth_date)
-    print("Created:", patient.created_at)
+    print("family name mainden:", patient.family_name_maiden)
+    print("Gender:", patient.gender)
+    print("IPP:", patient.ipp)
+    print("Telecom:", patient.telecom)
+    print("Adress:", patient.address)
+    print("Created at:", patient.created_at)
     print("Last updated:", patient.last_updated)
 
     # =========================
@@ -126,14 +129,23 @@ def dump_patient_full(session, ipp: str):
     print("\n================ APPOINTMENTS ================")
     for a in patient.appointments:
         print("ID:", a.id)
-        print("Service type:", a.service_type)
         print("Status:", a.status)
+        print("Code:", a.code)
+        print("Service type:", a.service_type)
+        print("Service category:", a.service_category)
+        print("Is active:", a.is_active)
         print("Start:", a.start_scheduled_period)
         print("End:", a.end_scheduled_period)
-        print("Code:", a.code)
+        print("Instance:", a.instance)
         print("User note:", a.user_note)
-        print("Device:", a.device)
+        print("Minutes duration:", a.minutes_duration)
         print("Comment:", a.comment)
+        print("Device:", a.device)
+        print("Physician id:", a.physician_id)
+        print("Physician:", a.physician)
+        print("Patient id:", a.patient_id)
+        print("Created at:", a.created_at)
+        print("last updated:", a.last_updated)
         print("---")
 
     # =========================
@@ -148,20 +160,27 @@ def dump_patient_full(session, ipp: str):
             print("  Display focus:", t.display_focus)
             print("  Status:", t.status)
             print("  Code:", t.code)
-            print("  Category:", t.category)
             print("  Minutes duration:", t.minutes_duration)
             print("  Activity definition id:", t.activitydefinition_id)
             print("  Based On:", t.basedOn)
+            print("  Restriction period end:", t.restriction_period_end)
+            print("  ExecutionPeriod:", t.executionPeriod)
+            print("  LastModified:", t.lastModified)
             print("  Authored On:", t.authoredOn)
+            print("  Category:", t.category)
+            print("  Note:", t.note)
             print("  Recipient:", t.recipient)
             print("  Recipient ID:", t.recipient_id)
             print("  Careplan id:", t.careplan_id)
-            print("  Device:", t.device)
-            print("  Created:", t.created_at)
+            print("  Created at:", t.created_at)
             print("  Last updated:", t.last_updated)
-            print("  Note:", t.note)
+            print("  Device:", t.device)
+            print("  CAREPLAN id:", cp.id)
             print("  CAREPLAN Title:", cp.title)
             print("  CAREPLAN Note:", cp.note)
+            print("  CAREPLAN Patient id:", cp.patient_id)
+            print("  CAREPLAN Created at:", cp.created_at)
+            print("  CAREPLAN Last_updated:", cp.last_updated)
             print("  ---")
 
             # =========================
@@ -225,8 +244,10 @@ def dump_patient_full(session, ipp: str):
     log = session.query(QueryLog).first()
 
     if log:
+        print("Id:", log.id)
         print("Last task request:", log.last_task_request)
         print("Last appointment request:", log.last_appointment_request)
+        print("Created at:", log.created_at)
         print("Last updated:", log.last_updated)
 
 
@@ -235,7 +256,7 @@ def dump_patient_full(session, ipp: str):
 # =========================================================
 # Get all data patient (DEBUG CALL)
 session = SessionLocal()
-dump_patient_full(session, "202209726")
+dump_patient_full(session, "200002105")
 session.close()
 """
 #endregion
@@ -791,32 +812,41 @@ def load_data():
 
                     # =========================================================
                     # RECHERCHE PROGRAMMATION CQ PATIENT DANS TIMEPLANNER
+                    # Non fonctionnel pour le moment... la database SQL doit être modifiée (cf: FX)
+                    # Les taches de 'CQ Patient' sont toutes mise dans un patient_id = 3 (patient générique pour les CQ) 
+                    # et il faut filtrer sur la date du jour et le service_type 'CQ Patient' pour trouver les patients concernés.
+                    # Cependant l'ipp du patient n'est pas lié à la tâche, il faut créer une colonne supplémentaire dans la bas SQL
                     # =========================================================
-                    # récupère la date du jour pour filtrer les tâches du jour
+
                     today_start = datetime.now().replace(
                         hour=0,
                         minute=0,
                         second=0,
                         microsecond=0
                     )
+
                     today_end = today_start + timedelta(days=1)
 
-                    # recherche les tâches du jour avec display_focus 'CQ Patient' (pour info et tri)
-                    cq_patient_today = False
-                    cq_patient_appts = [
-                        appt for appt in patient.appointments
-                        if (
-                            appt.service_type
-                            and appt.service_type.strip().lower() == "cq patient"
-                            and appt.start_scheduled_period
-                            and today_start <= appt.start_scheduled_period < today_end
-                            and str(appt.status or "").lower() != "cancelled"
+                    all_cq_patient_appts = (
+                        session.query(Appointments)
+                        .filter(
+                            Appointments.patient_id == 3,
+                            Appointments.start_scheduled_period >= today_start,
+                            Appointments.start_scheduled_period < today_end,
+                            Appointments.service_type.ilike("%cq patient%"),
+                            func.lower(Appointments.status) != "cancelled"
                         )
-                    ]
+                        .all()
+                    )
 
-                    if cq_patient_appts:
-                        cq_patient_today = True
+                    print("CQ patient appointments found:", len(all_cq_patient_appts))
+                    
+                    # reste à coder à partir de ce point 
+                    # quand il existera une nouvelle colonne contenant l'IPP du patient concerné dans la table des appointments de la database SQL 
+                    # (pour l'instant tous les CQ patient sont liés à un patient_id générique = 3, ce qui empêche de faire le lien avec les patients réels)
+                    cq_patient_today = False
 
+                    
                     # =========================================================
                     # MISE DANS UNE TABLE DES INFIRMATIONS COLLECTEES
                     # =========================================================
@@ -1337,7 +1367,7 @@ class MainWindow(QMainWindow):
             "ID patient",
             "Type de tâche CQ",
             "Statut de la tâche",
-            "Personne ayant crée le CQ et fait les exports dicom",
+            "Personne ayant créé le CQ et fait les exports dicom",
             "Note associée à la tâche",
             "CQ Patient programmé pour aujourd'hui dans Timeplanner ?",
             "Dossier patient existant sur le réseau IUCT ?",
