@@ -630,6 +630,12 @@ def load_daily_qa(session):
 
             "ipp": patient.ipp,
 
+            "patient_id": patient.id,
+
+            "patient_id": appt.patient_id,
+
+            "family_name_official": patient.family_name_official,
+
             "existing_folder": False,
 
             "existing_dicom": False,
@@ -641,6 +647,8 @@ def load_daily_qa(session):
     
     return qa_rows
 
+
+"""
 def filter_today_qa(QA):
     # =========================================================
     # FILTER QA FOR TODAY + CURRENT + FUTURE
@@ -704,6 +712,89 @@ def filter_today_qa(QA):
     print("QA TODAY CURRENT/FUTURE:", len(filtered))
 
     return filtered
+"""
+
+def filter_today_qa(QA):
+    # =========================================================
+    # FILTER QA FOR TODAY + CURRENT + FUTURE
+    # =========================================================
+    now = datetime.now()
+
+    today_start = now.replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
+    today_end = today_start + timedelta(days=1)
+
+    filtered = []
+
+    for row in QA:
+
+        met_start = row.get("met_start")
+        met_end = row.get("met_end")
+
+        if not met_start:
+            continue
+
+        # =========================
+        # STATUS FILTER
+        # =========================
+        task_status = str(row.get("task_status") or "").lower()
+
+        if task_status not in ["booked", "arrived"]:
+            continue
+
+        # =========================
+        # FILTER CQ TYPE
+        # Affiche seulement :
+        # - family_name_official contenant "CQ HEBDOMADAIRE"
+        # - OU patient_id == 3
+        # =========================
+        family_name = str(
+            row.get("family_name_official") or ""
+        ).upper()
+
+        patient_id = row.get("patient_id")
+
+        if (
+            "CQ HEBDOMADAIRE" not in family_name
+            and patient_id != 3
+        ):
+            continue
+
+        # =========================
+        # ONLY TODAY
+        # =========================
+        if not (today_start <= met_start < today_end):
+            continue
+
+        # =========================
+        # KEEP:
+        # - FUTURE SLOT
+        # - CURRENT SLOT
+        # =========================
+        is_future = met_start >= now
+
+        is_current = (
+            met_start <= now
+            and met_end
+            and now <= met_end
+        )
+
+        if is_future or is_current:
+            filtered.append(row)
+
+    # =========================
+    # SORT BY START TIME
+    # =========================
+    filtered.sort(key=lambda x: x["met_start"])
+
+    print("QA TODAY CURRENT/FUTURE:", len(filtered))
+
+    return filtered
 
 def load_data():
     # =========================================================
@@ -714,8 +805,39 @@ def load_data():
     print("\nDatabase connection OK")
     connection.close()
 
-    # Recherche dans la Database des patients ayant des tâches de 'réalisation des CQ prêtes' en attente depuis moins de 14 jours
     session = SessionLocal()
+
+    # =========================================================
+    # RECHERCHE PROGRAMMATION DE TOUS LES CQ PATIENT DANS TIMEPLANNER (POUR AUJOURD'HUI)
+    # =========================================================
+    today_start = datetime.now().replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
+    today_end = today_start + timedelta(days=1)
+
+    all_cq_patient_appts = (
+    session.query(Appointments)
+    .filter(
+        Appointments.start_scheduled_period >= today_start,
+        Appointments.start_scheduled_period < today_end,
+        Appointments.service_type.ilike("%cq patient%"),
+        ~func.lower(Appointments.status).in_([
+            "cancelled",
+            "fulfilled"
+        ])
+    )
+    .all()
+)
+
+    print("CQ patient appointments found:", len(all_cq_patient_appts))
+
+    # =========================================================
+    # Recherche dans la Database des patients ayant des tâches de 'réalisation des CQ prêtes' en attente depuis moins de 14 jours
+    # =========================================================
     patients = (
         session.query(Patients)
         .join(Patients.careplans)
@@ -736,12 +858,99 @@ def load_data():
         .distinct()
         .all()
     )
+
     print(f"\nNumber of patients fetched: {len(patients)}")
 
-    rows = []
+
+    # =========================
+    # DETERMINE SI LE CQ PATIENT EST CREE SUR TIMEPLANNER
+    # On récupère dans la table 'all_cq_patient_appts' tous les numéro contenus dans 'patient_id' puis,
+    # on vérifie dans toute la table 'patient' si il existe un 'id' = 'patient_id'.
+    # si oui alors cq_patient_ids = true
+    # =========================
+
+    # 1) ids issus du timeplanner
+    cq_patient_appt_ids = {
+        appt.patient_id
+        for appt in all_cq_patient_appts
+        if appt.patient_id is not None
+    }
+
+    # 2) ids issus de la table Patients déjà chargée
+    patient_table_ids = {
+        p.id for p in patients
+    }
+
+    # 3) intersection = patients qui existent des deux côtés
+    cq_patient_ids = cq_patient_appt_ids.intersection(patient_table_ids)
+
+    print("CQ patient IDs:", cq_patient_ids)
+
+   
+
     for patient in patients:
 
+        # =========================================================
+        # RECHERCHE DES 'MET' ASSOCIÉS AU PATIENT (pour info et tri)
+        # =========================================================
+        # récupérer les MET valides
+        met_appointments = [
+            appt for appt in patient.appointments
+            if (
+                appt.service_type
+                and appt.service_type.upper().startswith("MET")
+                and appt.start_scheduled_period
+                and str(appt.status or "").lower() != "cancelled"
+            )
+        ]
+
+        # prendre la MET la plus récente (car le patient peut avoir eu un traitement par le passé)
+        met_appt = None
+
+        if met_appointments:
+            met_appt = max(
+                met_appointments,
+                key=lambda x: x.start_scheduled_period
+            )
+
+        # =========================================================
+        # RECHERCHE DE LA TACHE 'FINALISATION DOSSIER' => PHYSICIEN ou DOSIMETRISTE AYANT CRÉÉ LA TÂCHE CQ
+        # =========================================================
+        finalisation_tasks = [
+            t for cp in patient.careplans
+            for t in cp.tasks
+            if (
+                t.display_focus
+                and t.display_focus.lower().startswith("finalisation du dossier")
+            )
+        ]
+
+        # prendre la plus récente
+        latest_finalisation = None
+
+        if finalisation_tasks:
+            latest_finalisation = max(
+                finalisation_tasks,
+                key=lambda x: x.last_updated or datetime.min
+            )
+
+        # récupération du nom du physicien ou du dosimétriste
+        physicist = None
+
+        if latest_finalisation:
+            physicist = (
+                latest_finalisation.recipient
+                or latest_finalisation.recipient_id
+            )
+
+        # =========================================================
+        # RECHERCHE PROGRAMMATION CQ PATIENT DANS TIMEPLANNER
+        # =========================================================
+        cq_patient_today = patient.id in cq_patient_ids
+        rows = []
+
         for careplan in patient.careplans:
+
             for task in careplan.tasks:
 
                 if (
@@ -753,104 +962,18 @@ def load_data():
                     )
                 ):
 
-                     # FILTER STATUS 
+                    # FILTER STATUS
                     task_status = task.status.lower() if task.status else ""
+
                     if "cancelled" in task_status:
                         continue
 
                     # =========================================================
-                    # RECHERCHE DES 'MET' ASSOCIÉS AU PATIENT (pour info et tri)
-                    # =========================================================
-                    # récupérer les MET valides
-                    met_appt = None
-                    met_appointments = [
-                        appt for appt in patient.appointments
-                        if (
-                            appt.service_type
-                            and appt.service_type.upper().startswith("MET")
-                            and appt.start_scheduled_period
-                            and str(appt.status or "").lower() != "cancelled"
-                        )
-                    ]
-
-                    # prendre la MET la plus récente (car le patient peut avoir eu un traitement par le passé)
-                    met_appt = None
-                    if met_appointments:
-                        met_appt = max(
-                            met_appointments,
-                            key=lambda x: x.start_scheduled_period
-                        )
-
-                    # =========================================================
-                    # RECHERCHE DE LA TACHE 'FINALISATION DOSSIER' => PHYSICIEN ou DOSIMETRISTE AYANT CRÉÉ LA TÂCHE CQ
-                    # =========================================================
-                    finalisation_tasks = [
-                        t for cp in patient.careplans
-                        for t in cp.tasks
-                        if (
-                            t.display_focus
-                            and t.display_focus.lower().startswith("finalisation du dossier")
-                        )
-                    ]
-
-                    # prendre la plus récente
-                    latest_finalisation = None
-                    if finalisation_tasks:
-                        latest_finalisation = max(
-                            finalisation_tasks,
-                            key=lambda x: x.last_updated or datetime.min
-                        )
-
-                    # récupération du nom du physicien ou du dosimétriste
-                    physicist = None
-                    if latest_finalisation:
-                        physicist = (
-                            latest_finalisation.recipient
-                            or latest_finalisation.recipient_id
-                        )
-
-
-                    # =========================================================
-                    # RECHERCHE PROGRAMMATION CQ PATIENT DANS TIMEPLANNER
-                    # Non fonctionnel pour le moment... la database SQL doit être modifiée (cf: FX)
-                    # Les taches de 'CQ Patient' sont toutes mise dans un patient_id = 3 (patient générique pour les CQ) 
-                    # et il faut filtrer sur la date du jour et le service_type 'CQ Patient' pour trouver les patients concernés.
-                    # Cependant l'ipp du patient n'est pas lié à la tâche, il faut créer une colonne supplémentaire dans la bas SQL
-                    # =========================================================
-
-                    today_start = datetime.now().replace(
-                        hour=0,
-                        minute=0,
-                        second=0,
-                        microsecond=0
-                    )
-
-                    today_end = today_start + timedelta(days=1)
-
-                    all_cq_patient_appts = (
-                        session.query(Appointments)
-                        .filter(
-                            Appointments.patient_id == 3,
-                            Appointments.start_scheduled_period >= today_start,
-                            Appointments.start_scheduled_period < today_end,
-                            Appointments.service_type.ilike("%cq patient%"),
-                            func.lower(Appointments.status) != "cancelled"
-                        )
-                        .all()
-                    )
-
-                    print("CQ patient appointments found:", len(all_cq_patient_appts))
-                    
-                    # reste à coder à partir de ce point 
-                    # quand il existera une nouvelle colonne contenant l'IPP du patient concerné dans la table des appointments de la database SQL 
-                    # (pour l'instant tous les CQ patient sont liés à un patient_id générique = 3, ce qui empêche de faire le lien avec les patients réels)
-                    cq_patient_today = False
-
-                    
-                    # =========================================================
                     # MISE DANS UNE TABLE DES INFIRMATIONS COLLECTEES
                     # =========================================================
+                    cq_patient_today = patient.id in cq_patient_ids
                     rows.append({
+
                         # PATIENT
                         "ipp": patient.ipp,
                         "last_name": patient.family_name_official,
@@ -858,7 +981,8 @@ def load_data():
                         "physicist": physicist,
 
                         # CQ PATIENT
-                        "cq_patient_today": cq_patient_today,
+                        "Timeplanner": cq_patient_today,
+                        "patient_id": patient.id,
 
                         # TASK
                         "task_display_focus": task.display_focus,
@@ -875,7 +999,6 @@ def load_data():
                         "met_status": met_appt.status if met_appt else None,
                     })
 
-
     # =========================================================
     # LOAD QA
     # =========================================================
@@ -886,10 +1009,9 @@ def load_data():
     session.close()
 
     rows = clean_cq_rows(rows)
+
     print("\nROWS RAW:")
     print(rows)
-
-       
 
     # =========================================================
     # FILTRE LES PATIENTS PAR MACHINE CONCERNEE (TOMO 2, TOMO 4, TOMO 7, NOVA)
@@ -898,7 +1020,7 @@ def load_data():
     Tomo2 = []
     Tomo4 = []
     Tomo7 = []
-    
+
     for row in rows:
 
         focus = row["task_display_focus"]
@@ -947,7 +1069,7 @@ def load_data():
     Tomo2 = sort_by_met_start(Tomo2)
     Tomo4 = sort_by_met_start(Tomo4)
     Tomo7 = sort_by_met_start(Tomo7)
-    
+
     check_existing_folders(Nova, Tomo2, Tomo4, Tomo7)
 
     return Nova, Tomo2, Tomo4, Tomo7, QA, MACHINE_SCHEDULE
@@ -1424,7 +1546,7 @@ class MainWindow(QMainWindow):
             # =========================
             folder_ok = patient.get("existing_folder", False)
             dicom_ok = patient.get("existing_dicom", False)
-            cq_patient_ok = patient.get("cq_patient_today", False)
+            cq_patient_ok = patient.get("Timeplanner", False)
 
             folder_icon = "✅" if folder_ok else "❌"
             dicom_icon = "✅" if dicom_ok else "❌"
