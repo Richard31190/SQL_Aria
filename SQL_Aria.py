@@ -402,27 +402,74 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
         return None, None
 
     # =========================
-    # CHECK DICOM FILES
+    # CHECK DICOM AND PDF FILES
     # =========================
-    def dicom_exists(folder_path):
+    def check_dicom_and_pdf(folder_path):
 
         if not folder_path:
-            return False
+            return False, False
 
         try:
 
+            dcm_date = None
+
+            # =========================
+            # RECHERCHE DICOM
+            # =========================
             for root, dirs, files in os.walk(folder_path):
 
                 for file in files:
 
                     if file.lower().endswith(".dcm"):
 
-                        return True
+                        full_path = os.path.join(root, file)
+
+                        dcm_date = datetime.fromtimestamp(
+                            os.path.getmtime(full_path)
+                        )
+
+                        break
+
+                if dcm_date:
+                    break
+
+            # aucun DICOM
+            if not dcm_date:
+                return False, False
+
+            # =========================
+            # RECHERCHE PDF
+            # =========================
+            pdf_ok = False
+
+            for root, dirs, files in os.walk(folder_path):
+
+                for file in files:
+
+                    if file.lower().endswith(".pdf"):
+
+                        pdf_path = os.path.join(root, file)
+
+                        pdf_date = datetime.fromtimestamp(
+                            os.path.getmtime(pdf_path)
+                        )
+
+                        # même jour ou plus récent
+                        if pdf_date.date() >= dcm_date.date():
+
+                            pdf_ok = True
+                            break
+
+                if pdf_ok:
+                    break
+
+            return True, pdf_ok
 
         except Exception as e:
-            print(f"[DICOM ERROR] {folder_path} -> {e}")
 
-        return False
+            print(f"[DICOM/PDF ERROR] {folder_path} -> {e}")
+
+            return False, False
 
     # =========================
     # PROCESS TOMO
@@ -437,7 +484,11 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
             )
 
             row["existing_folder"] = folder_name is not None
-            row["existing_dicom"] = dicom_exists(folder_path)
+
+            dicom_ok, pdf_ok = check_dicom_and_pdf(folder_path)
+
+            row["existing_dicom"] = dicom_ok
+            row["existing_pdf"] = pdf_ok
 
             # mémorisation chemin trouvé
             row["folder_name"] = folder_name
@@ -491,7 +542,10 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
                     machine = "RA"
 
             row["existing_folder"] = folder_name is not None
-            row["existing_dicom"] = dicom_exists(folder_path)
+            dicom_ok, pdf_ok = check_dicom_and_pdf(folder_path)
+
+            row["existing_dicom"] = dicom_ok
+            row["existing_pdf"] = pdf_ok
 
             # =========================
             # MEMORISATION
@@ -639,6 +693,8 @@ def load_daily_qa(session):
             "existing_folder": False,
 
             "existing_dicom": False,
+
+            "existing_pdf": False,
 
             "folder_path": ""
         })
@@ -808,7 +864,7 @@ def load_data():
     session = SessionLocal()
 
     # =========================================================
-    # RECHERCHE PROGRAMMATION DE TOUS LES CQ PATIENT DANS TIMEPLANNER (POUR AUJOURD'HUI)
+    # RECHERCHE DE TOUS LES CQ PATIENT PROGRAMME DANS TIMEPLANNER (POUR AUJOURD'HUI) - ETAPE 1/2
     # =========================================================
     today_start = datetime.now().replace(
         hour=0,
@@ -866,22 +922,23 @@ def load_data():
     # DETERMINE SI LE CQ PATIENT EST CREE SUR TIMEPLANNER
     # On récupère dans la table 'all_cq_patient_appts' tous les numéro contenus dans 'patient_id' puis,
     # on vérifie dans toute la table 'patient' si il existe un 'id' = 'patient_id'.
-    # si oui alors cq_patient_ids = true
+    # si oui alors on ajoute 'patient_id' à 'cq_patient_ids' 
+    # Etape 2/2
     # =========================
 
-    # 1) ids issus du timeplanner
+    # 1) récupère les numéros contenues dans 'patient_id' de la table 'all_cq_patient_appts'
     cq_patient_appt_ids = {
         appt.patient_id
         for appt in all_cq_patient_appts
         if appt.patient_id is not None
     }
 
-    # 2) ids issus de la table Patients déjà chargée
+    # 2) récupère les numéros d'ID de tous les patients de la table 'patients'
     patient_table_ids = {
         p.id for p in patients
     }
 
-    # 3) intersection = patients qui existent des deux côtés
+    # 3) retient UNIQUEMENT les numéros d'ID qui sont présents dans les 2 tables (cq_patient_appt_ids et patient_table_ids))
     cq_patient_ids = cq_patient_appt_ids.intersection(patient_table_ids)
 
     print("CQ patient IDs:", cq_patient_ids)
@@ -1464,7 +1521,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
 
         table = QTableWidget()
-        table.setColumnCount(12)
+        table.setColumnCount(13)
 
         table.setHorizontalHeaderLabels([
             "Status",
@@ -1478,7 +1535,9 @@ class MainWindow(QMainWindow):
             "Time Planner",
             "Folder",
             "Dicom",
+            "PDF",
             "Adress"
+            
         ])
 
         # info popup sur les headers
@@ -1493,6 +1552,7 @@ class MainWindow(QMainWindow):
             "Note associée à la tâche",
             "CQ Patient programmé pour aujourd'hui dans Timeplanner ?",
             "Dossier patient existant sur le réseau IUCT ?",
+            "Rapport PDF présent et daté du même jour ou après les exports DICOM"
             "Fichiers DICOM (calculs) présents dans le dossier ?",
             "Nom du dossier où le calcul à été exporté"
         ]
@@ -1547,10 +1607,13 @@ class MainWindow(QMainWindow):
             folder_ok = patient.get("existing_folder", False)
             dicom_ok = patient.get("existing_dicom", False)
             cq_patient_ok = patient.get("Timeplanner", False)
+            pdf_ok = patient.get("existing_pdf", False)
+
 
             folder_icon = "✅" if folder_ok else "❌"
             dicom_icon = "✅" if dicom_ok else "❌"
             cq_patient_icon = "✅" if cq_patient_ok else "❌"
+            pdf_icon = "✅" if pdf_ok else "❌"
 
             # =========================
             # ADRESS DISPLAY
@@ -1584,6 +1647,7 @@ class MainWindow(QMainWindow):
             # nouvelles colonnes
             item8 = QTableWidgetItem(folder_icon)
             item9 = QTableWidgetItem(dicom_icon)
+            item_pdf = QTableWidgetItem(pdf_icon)
             item10 = QTableWidgetItem(adress)
 
             # =========================
@@ -1593,7 +1657,7 @@ class MainWindow(QMainWindow):
             item8.setTextAlignment(Qt.AlignCenter)
             item9.setTextAlignment(Qt.AlignCenter)
             item_cq_patient.setTextAlignment(Qt.AlignCenter)
-
+            item_pdf.setTextAlignment(Qt.AlignCenter)
             # =========================
             # TOOLTIP + COLOR (sur toute la ligne)
             # =========================
@@ -1609,6 +1673,7 @@ class MainWindow(QMainWindow):
     item_cq_patient,
     item8,
     item9,
+    item_pdf,
     item10
 ]
             for i in items:
@@ -1629,7 +1694,8 @@ class MainWindow(QMainWindow):
             table.setItem(row, 8, item_cq_patient)
             table.setItem(row, 9, item8)
             table.setItem(row, 10, item9)
-            table.setItem(row, 11, item10)
+            table.setItem(row, 11, item_pdf)
+            table.setItem(row, 12, item10)
 
 
         table.resizeColumnsToContents()
