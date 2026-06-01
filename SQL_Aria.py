@@ -262,6 +262,29 @@ session.close()
 #endregion
 
 
+def print_query_log(session):
+    # =========================================================
+    # Affiche les dernières requêtes ARIA ayant alimenté la DB
+    # =========================================================
+
+    log = (
+        session.query(QueryLog)
+        .order_by(QueryLog.id.desc())
+        .first()
+    )
+
+    if not log:
+        print("Aucune entrée dans query_log")
+        return
+
+    print("\n================ QUERY LOG ================")
+    print("ID :", log.id)
+    print("last_task_request :", log.last_task_request)
+    print("last_appointment_request :", log.last_appointment_request)
+    print("created_at :", log.created_at)
+    print("last_updated :", log.last_updated)
+    print("==========================================\n")
+
 def get_last_database_update(session):
     # =========================================================
     # Récupère la date et l'heure de la dernière actualisation (partielle ou complète) de la base de données (pour info dans le dashboard))
@@ -862,6 +885,7 @@ def load_data():
     connection.close()
 
     session = SessionLocal()
+    print_query_log(session)
 
     # =========================================================
     # RECHERCHE DE TOUS LES CQ PATIENT PROGRAMME DANS TIMEPLANNER (POUR AUJOURD'HUI) - ETAPE 1/2
