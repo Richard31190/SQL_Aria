@@ -1576,8 +1576,8 @@ class MainWindow(QMainWindow):
             "Note associée à la tâche",
             "CQ Patient programmé pour aujourd'hui dans Timeplanner ?",
             "Dossier patient existant sur le réseau IUCT ?",
-            "Rapport PDF présent et daté du même jour ou après les exports DICOM"
             "Fichiers DICOM (calculs) présents dans le dossier ?",
+            "Rapport PDF présent et daté du même jour ou après les exports DICOM",
             "Nom du dossier où le calcul à été exporté"
         ]
 
