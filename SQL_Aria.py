@@ -48,6 +48,9 @@ from PySide6.QtCore import QTimer
 from PySide6.QtCore import Qt
 
 from pathlib import Path
+from PySide6.QtWidgets import QWidget, QCheckBox, QHBoxLayout
+from PySide6.QtCore import Qt
+
 
 import sys
 
@@ -261,6 +264,17 @@ session.close()
 """
 #endregion
 
+def create_centered_checkbox(checked=True):
+    widget = QWidget()
+    layout = QHBoxLayout(widget)
+    layout.setContentsMargins(0, 0, 0, 0)
+
+    checkbox = QCheckBox()
+    checkbox.setChecked(checked)
+
+    layout.addWidget(checkbox, alignment=Qt.AlignCenter)
+
+    return widget
 
 def print_query_log(session):
     # =========================================================
@@ -1545,10 +1559,11 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
 
         table = QTableWidget()
-        table.setColumnCount(13)
+        table.setColumnCount(14)
 
         table.setHorizontalHeaderLabels([
             "Status",
+            "Select",
             "MET Date",
             "Patient",
             "IPP",
@@ -1659,6 +1674,7 @@ class MainWindow(QMainWindow):
             # CREATE ITEMS
             # =========================
             item0 = QTableWidgetItem(dot)
+            item_select_widget = create_centered_checkbox(True)
             item1 = QTableWidgetItem(str(met_date))
             item2 = QTableWidgetItem(f'{patient["last_name"]} {patient["first_name"]}')
             item3 = QTableWidgetItem(str(patient["ipp"]))
@@ -1708,18 +1724,19 @@ class MainWindow(QMainWindow):
             # INSERT INTO TABLE
             # =========================
             table.setItem(row, 0, item0)
-            table.setItem(row, 1, item1)
-            table.setItem(row, 2, item2)
-            table.setItem(row, 3, item3)
-            table.setItem(row, 4, item4)
-            table.setItem(row, 5, item5)
-            table.setItem(row, 6, item_physicist)
-            table.setItem(row, 7, item7)
-            table.setItem(row, 8, item_cq_patient)
-            table.setItem(row, 9, item8)
-            table.setItem(row, 10, item9)
-            table.setItem(row, 11, item_pdf)
-            table.setItem(row, 12, item10)
+            table.setCellWidget(row, 1, item_select_widget)
+            table.setItem(row, 2, item1)
+            table.setItem(row, 3, item2)
+            table.setItem(row, 4, item3)
+            table.setItem(row, 5, item4)
+            table.setItem(row, 6, item5)
+            table.setItem(row, 7, item_physicist)
+            table.setItem(row, 8, item7)
+            table.setItem(row, 9, item_cq_patient)
+            table.setItem(row, 10, item8)
+            table.setItem(row, 11, item9)
+            table.setItem(row, 12, item_pdf)
+            table.setItem(row, 13, item10)
 
 
         table.resizeColumnsToContents()
