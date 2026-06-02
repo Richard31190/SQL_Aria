@@ -1174,6 +1174,19 @@ class MainWindow(QMainWindow):
     # INTERFACE QT
     # UPDATE QA HEADER
     # =====================================================
+    def on_tab_changed(self, index):
+        tab_text = self.tabs.tabText(index)
+
+        # garde uniquement la partie avant "("
+        tab_name = tab_text.split("(")[0].strip()
+
+        widget = self.tabs.widget(index)
+
+        if hasattr(widget, "footer_label"):
+            widget.footer_label.setText(
+                f"Temps estimé ({tab_name}) suivant sélection :"
+            )
+
     def toggle_db_blink(self):
         # Clignottement du message d'alerte de la database SQL en cas de délai de refresh trop long (indication visuelle pour l'utilisateur)
         if not hasattr(self, "db_alert_level"):
@@ -1561,6 +1574,16 @@ class MainWindow(QMainWindow):
         table = QTableWidget()
         table.setColumnCount(14)
 
+        footer_label = QLabel("Temps estimé suivant sélection :")
+        footer_label.setStyleSheet("""
+            QLabel {
+                background-color: #f0f0f0;
+                padding: 6px;
+                font-weight: bold;
+                border-top: 1px solid #ccc;
+            }
+        """)
+
         table.setHorizontalHeaderLabels([
             "Status",
             "Select",
@@ -1741,8 +1764,14 @@ class MainWindow(QMainWindow):
 
         table.resizeColumnsToContents()
 
+        self.tabs.currentChanged.connect(self.on_tab_changed)
+
         layout.addWidget(table)
+        layout.addWidget(footer_label)
         widget.setLayout(layout)
+
+        widget.footer_label = footer_label
+        widget.table = table
 
         return widget
 
