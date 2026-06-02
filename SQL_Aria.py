@@ -1179,16 +1179,16 @@ class MainWindow(QMainWindow):
     # =====================================================
     TIME_RULES = {
         "tomo": {
-            "fixed": 15,   # montage + démontage
-            "per_case": 20
+            "fixed": 7,   # montage + démontage
+            "per_case": 10
         },
         "ruby": {
-            "fixed": 25,
-            "per_case": 35
+            "fixed": 7,   # montage + démontage
+            "per_case": 10
         },
         "octa": {
-            "fixed": 30,
-            "per_case": 45
+            "fixed": 10,   # montage + démontage
+            "per_case": 8
         }
     }
 
@@ -1565,7 +1565,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("CQ Dashboard")
-        self.resize(1200, 700)
+        self.resize(1400, 500)
 
         self.now = datetime.now()
         self.limit = add_business_days(self.now, 2)
