@@ -903,7 +903,7 @@ def load_data():
 
     session = SessionLocal()
     print_query_log(session)
-
+    rows = []
     # =========================================================
     # RECHERCHE DE TOUS LES CQ PATIENT PROGRAMME DANS TIMEPLANNER (POUR AUJOURD'HUI) - ETAPE 1/2
     # =========================================================
@@ -1045,7 +1045,7 @@ def load_data():
         # RECHERCHE PROGRAMMATION CQ PATIENT DANS TIMEPLANNER
         # =========================================================
         cq_patient_today = patient.id in cq_patient_ids
-        rows = []
+        #rows = []
 
         for careplan in patient.careplans:
 
