@@ -264,6 +264,7 @@ session.close()
 """
 #endregion
 
+
 def create_centered_checkbox(checked=True):
     widget = QWidget()
     layout = QHBoxLayout(widget)
@@ -273,6 +274,8 @@ def create_centered_checkbox(checked=True):
     checkbox.setChecked(checked)
 
     layout.addWidget(checkbox, alignment=Qt.AlignCenter)
+
+    widget.checkbox = checkbox   # 👈 IMPORTANT
 
     return widget
 
@@ -1174,17 +1177,99 @@ class MainWindow(QMainWindow):
     # INTERFACE QT
     # UPDATE QA HEADER
     # =====================================================
+    TIME_RULES = {
+        "tomo": {
+            "fixed": 15,   # montage + démontage
+            "per_case": 20
+        },
+        "ruby": {
+            "fixed": 25,
+            "per_case": 35
+        },
+        "octa": {
+            "fixed": 30,
+            "per_case": 45
+        }
+    }
+
+    DEFAULT_TIME = {
+        "fixed": 10,
+        "per_case": 15
+    }
+
+    def refresh_current_tab_footer(self):
+        index = self.tabs.currentIndex()
+        self.on_tab_changed(index)
+
+    def calculate_estimated_time(self, table_widget, tab_name):
+
+        used_categories = {
+            "tomo": 0,
+            "ruby": 0,
+            "octa": 0
+        }
+
+        total_minutes = 0
+
+        # =========================
+        # 1) COMPTER LES CASES
+        # =========================
+        for row in range(table_widget.rowCount()):
+
+            cell_widget = table_widget.cellWidget(row, 1)
+            if not cell_widget:
+                continue
+
+            checkbox = getattr(cell_widget, "checkbox", None)
+            if not checkbox or not checkbox.isChecked():
+                continue
+
+            task_item = table_widget.item(row, 5)
+            task_text = (task_item.text() if task_item else "").lower()
+
+            matched = False
+
+            for key in used_categories.keys():
+                if key in task_text:
+                    used_categories[key] += 1
+                    matched = True
+                    break
+
+            if not matched:
+                # catégorie inconnue → fallback
+                used_categories.setdefault("other", 0)
+                used_categories["other"] += 1
+
+        # =========================
+        # 2) CALCUL TEMPS
+        # =========================
+        for key, count in used_categories.items():
+
+            if count == 0:
+                continue
+
+            rule = self.TIME_RULES.get(key, self.DEFAULT_TIME)
+
+            # 1 seul montage/démontage par catégorie utilisée
+            total_minutes += rule["fixed"]
+
+            # temps par CQ
+            total_minutes += count * rule["per_case"]
+
+        return total_minutes
+    
     def on_tab_changed(self, index):
         tab_text = self.tabs.tabText(index)
-
-        # garde uniquement la partie avant "("
         tab_name = tab_text.split("(")[0].strip()
 
         widget = self.tabs.widget(index)
 
-        if hasattr(widget, "footer_label"):
+        if hasattr(widget, "footer_label") and hasattr(widget, "table"):
+
+            total = self.calculate_estimated_time(widget.table, tab_name)
+
             widget.footer_label.setText(
-                f"Temps estimé ({tab_name}) suivant sélection :"
+                f"Temps estimé ({tab_name}) suivant sélection : {total} min"
             )
 
     def toggle_db_blink(self):
@@ -1698,6 +1783,9 @@ class MainWindow(QMainWindow):
             # =========================
             item0 = QTableWidgetItem(dot)
             item_select_widget = create_centered_checkbox(True)
+            item_select_widget.checkbox.stateChanged.connect(
+                lambda _: self.refresh_current_tab_footer()
+            )
             item1 = QTableWidgetItem(str(met_date))
             item2 = QTableWidgetItem(f'{patient["last_name"]} {patient["first_name"]}')
             item3 = QTableWidgetItem(str(patient["ipp"]))
