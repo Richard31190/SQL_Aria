@@ -51,7 +51,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QWidget, QCheckBox, QHBoxLayout
 from PySide6.QtCore import Qt
 
-
+from PySide6.QtWidgets import QMessageBox
 import sys
 
 # =========================================================
@@ -266,6 +266,9 @@ session.close()
 
 
 def create_centered_checkbox(checked=True):
+    # =========================================================
+    # Affiche la case à cocher de la colonne 'Select' au milieu de la cellule du tableau
+    # =========================================================
     widget = QWidget()
     layout = QHBoxLayout(widget)
     layout.setContentsMargins(0, 0, 0, 0)
@@ -744,72 +747,6 @@ def load_daily_qa(session):
     return qa_rows
 
 
-"""
-def filter_today_qa(QA):
-    # =========================================================
-    # FILTER QA FOR TODAY + CURRENT + FUTURE
-    # =========================================================
-    now = datetime.now()
-
-    today_start = now.replace(
-        hour=0,
-        minute=0,
-        second=0,
-        microsecond=0
-    )
-
-    today_end = today_start + timedelta(days=1)
-
-    filtered = []
-
-    for row in QA:
-
-        met_start = row.get("met_start")
-        met_end = row.get("met_end")
-
-        if not met_start:
-            continue
-
-        # =========================
-        # STATUS FILTER
-        # =========================
-        task_status = str(row.get("task_status") or "").lower()
-
-        if task_status not in ["booked", "arrived"]:
-            continue
-
-        # =========================
-        # ONLY TODAY
-        # =========================
-        if not (today_start <= met_start < today_end):
-            continue
-
-        # =========================
-        # KEEP:
-        # - FUTURE SLOT
-        # - CURRENT SLOT
-        # =========================
-        is_future = met_start >= now
-
-        is_current = (
-            met_start <= now
-            and met_end
-            and now <= met_end
-        )
-
-        if is_future or is_current:
-            filtered.append(row)
-
-    # =========================
-    # SORT BY START TIME
-    # =========================
-    filtered.sort(key=lambda x: x["met_start"])
-
-    print("QA TODAY CURRENT/FUTURE:", len(filtered))
-
-    return filtered
-"""
-
 def filter_today_qa(QA):
     # =========================================================
     # FILTER QA FOR TODAY + CURRENT + FUTURE
@@ -897,9 +834,18 @@ def load_data():
     # EXTRACT from database to array
     # =========================================================
     # Test database connection
-    connection = engine.connect()
-    print("\nDatabase connection OK")
-    connection.close()
+    try:
+        connection = engine.connect()
+        print("\nDatabase connection OK")
+        connection.close()
+
+    except Exception as e:
+        print("DATABASE CONNECTION ERROR")
+        print(e)
+        raise
+    #connection = engine.connect()
+    #print("\nDatabase connection OK")
+    #connection.close()
 
     session = SessionLocal()
     print_query_log(session)
@@ -1045,7 +991,6 @@ def load_data():
         # RECHERCHE PROGRAMMATION CQ PATIENT DANS TIMEPLANNER
         # =========================================================
         cq_patient_today = patient.id in cq_patient_ids
-        #rows = []
 
         for careplan in patient.careplans:
 
@@ -1202,7 +1147,9 @@ class MainWindow(QMainWindow):
         self.on_tab_changed(index)
 
     def calculate_estimated_time(self, table_widget, tab_name):
-
+        # =========================================================
+        # Calcul du temps estimé pour la réalisation des CQ en fonction du nombre de patients sélectionnés dans le tableau, et de la machine concernée (TOMO 2, TOMO 4, TOMO 7, NOVA)
+        # =========================================================
         used_categories = {
             "tomo": 0,
             "ruby": 0,
@@ -1259,6 +1206,9 @@ class MainWindow(QMainWindow):
         return total_minutes
     
     def on_tab_changed(self, index):
+        # =========================================================
+        # Affiche dans le footer de chaque tableau le temps estimé pour la réalisation des CQ en fonction du nombre de patients sélectionnés dans le tableau, et de la machine concernée (TOMO 2, TOMO 4, TOMO 7, NOVA)
+        # =========================================================
         tab_text = self.tabs.tabText(index)
         tab_name = tab_text.split("(")[0].strip()
 
@@ -1418,6 +1368,7 @@ class MainWindow(QMainWindow):
         self.qa_label.setText(text)
 
     def refresh_data(self):
+        print("Tentative de refresh :", datetime.now())
         global Tomo2, Tomo4, Tomo7, Nova, QA
         self.now = datetime.now()
         self.limit = add_business_days(self.now, 2)
@@ -1428,7 +1379,36 @@ class MainWindow(QMainWindow):
         current_index = self.tabs.currentIndex()
 
         # reload data
-        Nova, Tomo2, Tomo4, Tomo7, QA, MACHINE_SCHEDULE = load_data()
+        try:
+
+            Nova, Tomo2, Tomo4, Tomo7, QA, MACHINE_SCHEDULE = load_data()
+
+            # La connexion revient après une panne
+            if self.db_error_shown:
+
+                QMessageBox.information(
+                    self,
+                    "Connexion rétablie",
+                    "La connexion à la base SQL est de nouveau disponible."
+                )
+
+            self.db_error_shown = False
+
+        except Exception as e:
+
+            if not self.db_error_shown:
+
+                QMessageBox.critical(
+                    self,
+                    "Erreur SQL",
+                    f"Impossible de se connecter à la base de données.\n\n{e}"
+                )
+
+                self.db_error_shown = True
+
+            return
+        #Nova, Tomo2, Tomo4, Tomo7, QA, MACHINE_SCHEDULE = load_data()
+        
         self.update_qa_header(QA)
         self.update_machine_footer(MACHINE_SCHEDULE)
 
@@ -1569,7 +1549,7 @@ class MainWindow(QMainWindow):
 
         self.now = datetime.now()
         self.limit = add_business_days(self.now, 2)
-
+        self.db_error_shown = False
         
         # =========================
         # ROOT WIDGET
