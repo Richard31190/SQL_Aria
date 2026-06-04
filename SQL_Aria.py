@@ -259,7 +259,7 @@ def dump_patient_full(session, ipp: str):
 # =========================================================
 # Get all data patient (DEBUG CALL)
 session = SessionLocal()
-dump_patient_full(session, "200002105")
+dump_patient_full(session, "202609018")
 session.close()
 """
 #endregion
@@ -850,6 +850,7 @@ def load_data():
     session = SessionLocal()
     print_query_log(session)
     rows = []
+    rows2=[]
     # =========================================================
     # RECHERCHE DE TOUS LES CQ PATIENT PROGRAMME DANS TIMEPLANNER (POUR AUJOURD'HUI) - ETAPE 1/2
     # =========================================================
@@ -904,6 +905,171 @@ def load_data():
 
     print(f"\nNumber of patients fetched: {len(patients)}")
 
+    # =========================================================
+    # Recherche dans la Database des patients avec :
+    # - Validation Médicale de la dosimétrie = completed ou ready
+    # - Finalisation du dossier = draft
+    # Correspond aux patients dont le CQ est imminent
+    # =========================================================
+
+    rows2 = []
+
+    patients_validation = (
+        session.query(Patients)
+        .join(Patients.careplans)
+        .join(Careplans.tasks)
+        .filter(
+            Tasks.last_updated >= two_weeks_ago
+        )
+        .options(
+            joinedload(Patients.careplans)
+            .joinedload(Careplans.tasks)
+        )
+        .distinct()
+        .all()
+    )
+
+    print(
+        f"Patients potentiellement éligibles CQ imminent : "
+        f"{len(patients_validation)}"
+    )
+
+    added_patient_ids = set()
+
+    for patient in patients_validation:
+
+        # ==========================================
+        # Validation Médicale de la dosimétrie
+        # ==========================================
+        validation_tasks = [
+            t
+            for cp in patient.careplans
+            for t in cp.tasks
+            if (
+                t.display_focus
+                and t.display_focus.lower().startswith(
+                    "validation médicale de la dosimétrie"
+                )
+                and str(t.status or "").lower() in [
+                    "completed",
+                    "in-progress",
+                    "ready"
+                ]
+                and t.last_updated
+                and t.last_updated >= two_weeks_ago
+            )
+        ]
+
+        if not validation_tasks:
+            continue
+
+        # ==========================================
+        # Finalisation du dossier
+        # ==========================================
+        finalisation_tasks = [
+            t
+            for cp in patient.careplans
+            for t in cp.tasks
+            if (
+                t.display_focus
+                and t.display_focus.lower().startswith(
+                    "finalisation du dossier"
+                )
+                and str(t.status or "").lower() == "draft"
+                and t.last_updated
+                and t.last_updated >= two_weeks_ago
+            )
+        ]
+
+        if not finalisation_tasks:
+            continue
+
+        # ==========================================
+        # Réalisation dosi (récupération du nom exact)
+        # ==========================================
+        realisation_dosi_task_name = None
+
+        for cp in patient.careplans:
+            for t in cp.tasks:
+                if (
+                    t.display_focus
+                    and "réalisation dosi" in t.display_focus.lower()
+                    and t.last_updated
+                    and t.last_updated >= two_weeks_ago
+                ):
+                    realisation_dosi_task_name = t.display_focus
+                    break
+            if realisation_dosi_task_name:
+                break
+
+        # ==========================================
+        # Evite les doublons patients
+        # ==========================================
+        if patient.id in added_patient_ids:
+            continue
+
+        added_patient_ids.add(patient.id)
+
+        # ==========================================
+        # Récupération device depuis Tasks
+        # ==========================================
+        devices = list({
+            t.device.name
+            for cp in patient.careplans
+            for t in cp.tasks
+            if getattr(t, "device", None)
+            and getattr(t.device, "name", None)
+        })
+
+        # ==========================================
+        # Construction de rows2
+        # ==========================================
+        rows2.append({
+
+            "ipp": patient.ipp,
+            "last_name": patient.family_name_official,
+            "first_name": patient.given,
+            "patient_id": patient.id,
+            "realisation_dosi_task": realisation_dosi_task_name,
+        })
+
+    print(f"Patients CQ imminent trouvés : {len(rows2)}")
+
+    # ==========================================
+    # Classement des patients en attente par machine d'attribution
+    # ==========================================
+    from collections import defaultdict
+
+    Patient_EnAttente_count = defaultdict(int)
+
+    for row in rows2:
+
+        task_name = row.get("realisation_dosi_task")
+
+        if not task_name:
+            continue
+
+        task_name_lower = task_name.lower()
+
+        if "tomo 2" in task_name_lower:
+            machine = "Tomo 2"
+
+        elif "tomo 4" in task_name_lower:
+            machine = "Tomo 4"
+
+        elif "tomo 7" in task_name_lower:
+            machine = "Tomo 7"
+
+        else:
+            machine = "Nova"
+
+        Patient_EnAttente_count[machine] += 1
+
+
+    print("\nRépartition des machines :\n")
+
+    for machine, count in Patient_EnAttente_count.items():
+        print(f"{machine} = {count}")
 
     # =========================
     # DETERMINE SI LE CQ PATIENT EST CREE SUR TIMEPLANNER
@@ -1115,7 +1281,7 @@ def load_data():
 
     check_existing_folders(Nova, Tomo2, Tomo4, Tomo7)
 
-    return Nova, Tomo2, Tomo4, Tomo7, QA, MACHINE_SCHEDULE
+    return Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, QA, MACHINE_SCHEDULE
 
 class MainWindow(QMainWindow):
     # =====================================================
@@ -1381,7 +1547,8 @@ class MainWindow(QMainWindow):
         # reload data
         try:
 
-            Nova, Tomo2, Tomo4, Tomo7, QA, MACHINE_SCHEDULE = load_data()
+            Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, QA, MACHINE_SCHEDULE = load_data()
+            self.Patient_EnAttente_count = Patient_EnAttente_count
 
             # La connexion revient après une panne
             if self.db_error_shown:
