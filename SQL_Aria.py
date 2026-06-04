@@ -259,7 +259,7 @@ def dump_patient_full(session, ipp: str):
 # =========================================================
 # Get all data patient (DEBUG CALL)
 session = SessionLocal()
-dump_patient_full(session, "202609018")
+dump_patient_full(session, "202608285")
 session.close()
 """
 #endregion
@@ -1397,7 +1397,7 @@ class MainWindow(QMainWindow):
             counts = getattr(self, "Patient_EnAttente_count", {})
 
             if not counts:
-                text = "Patients en attente imminents : 0"
+                text = "Patients en cours de préparation : 0"
             else:
                 # 👉 filtrage par onglet
                 tab_key = tab_name.replace(" ", "").lower()
@@ -1413,11 +1413,11 @@ class MainWindow(QMainWindow):
                         filtered[k] = v
 
                 if filtered:
-                    text = "Patients en attente imminents : " + " | ".join(
+                    text = "Patients en cours de préparation : " + " | ".join(
                         f"{k} = {v}" for k, v in sorted(filtered.items())
                     )
                 else:
-                    text = "Patients en attente imminents : 0"
+                    text = "Patients en cours de préparation : 0"
 
             widget.patient_label.setText(text)
 
@@ -1849,7 +1849,7 @@ class MainWindow(QMainWindow):
             }
         """)
 
-        patient_label = QLabel("Patients en attente imminents : -")
+        patient_label = QLabel("Patients en cours de préparation : -")
         patient_label.setStyleSheet("""
             QLabel {
                 background-color: #eaf7ea;
