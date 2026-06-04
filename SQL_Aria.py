@@ -1372,14 +1372,15 @@ class MainWindow(QMainWindow):
         return total_minutes
     
     def on_tab_changed(self, index):
-        # =========================================================
-        # Affiche dans le footer de chaque tableau le temps estimé pour la réalisation des CQ en fonction du nombre de patients sélectionnés dans le tableau, et de la machine concernée (TOMO 2, TOMO 4, TOMO 7, NOVA)
-        # =========================================================
+
         tab_text = self.tabs.tabText(index)
         tab_name = tab_text.split("(")[0].strip()
 
         widget = self.tabs.widget(index)
 
+        # =========================
+        # FOOTER TEMPS
+        # =========================
         if hasattr(widget, "footer_label") and hasattr(widget, "table"):
 
             total = self.calculate_estimated_time(widget.table, tab_name)
@@ -1387,6 +1388,38 @@ class MainWindow(QMainWindow):
             widget.footer_label.setText(
                 f"Temps estimé ({tab_name}) suivant sélection : {total} min"
             )
+
+        # =========================
+        # PATIENTS EN ATTENTE
+        # =========================
+        if hasattr(widget, "patient_label"):
+
+            counts = getattr(self, "Patient_EnAttente_count", {})
+
+            if not counts:
+                text = "Patients en attente imminents : 0"
+            else:
+                # 👉 filtrage par onglet
+                tab_key = tab_name.replace(" ", "").lower()
+
+                filtered = {}
+
+                for k, v in counts.items():
+
+                    k_norm = k.replace(" ", "").lower()
+
+                    # correspondance simple Tomo2 / Tomo4 / Tomo7 / Nova
+                    if tab_key in k_norm or k_norm in tab_key or tab_key == "nova(s)":
+                        filtered[k] = v
+
+                if filtered:
+                    text = "Patients en attente imminents : " + " | ".join(
+                        f"{k} = {v}" for k, v in sorted(filtered.items())
+                    )
+                else:
+                    text = "Patients en attente imminents : 0"
+
+            widget.patient_label.setText(text)
 
     def toggle_db_blink(self):
         # Clignottement du message d'alerte de la database SQL en cas de délai de refresh trop long (indication visuelle pour l'utilisateur)
@@ -1816,6 +1849,16 @@ class MainWindow(QMainWindow):
             }
         """)
 
+        patient_label = QLabel("Patients en attente imminents : -")
+        patient_label.setStyleSheet("""
+            QLabel {
+                background-color: #eaf7ea;
+                padding: 6px;
+                font-weight: bold;
+                border-top: 1px solid #ccc;
+            }
+        """)
+
         table.setHorizontalHeaderLabels([
             "Status",
             "Select",
@@ -2003,9 +2046,11 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(table)
         layout.addWidget(footer_label)
+        layout.addWidget(patient_label)
         widget.setLayout(layout)
 
         widget.footer_label = footer_label
+        widget.patient_label = patient_label
         widget.table = table
 
         return widget
