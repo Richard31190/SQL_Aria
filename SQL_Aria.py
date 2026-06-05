@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QWidget,
     QLabel,
+    QPushButton,
     QStatusBar,
     QVBoxLayout
 )
@@ -1314,9 +1315,11 @@ class CollapsibleWidget(QWidget):
     def __init__(self, title="Titre"):
         super().__init__()
 
-        self.toggle_button = QPushButton(f"▼ {title}")
+        self.toggle_button = QPushButton()
         self.toggle_button.setCheckable(True)
-        self.toggle_button.setChecked(True)
+        self.toggle_button.setChecked(False)
+
+        self.toggle_button.setText(f"▶ {title}")
 
         self.toggle_button.setStyleSheet("""
             QPushButton {
@@ -1334,6 +1337,8 @@ class CollapsibleWidget(QWidget):
         """)
 
         self.content = QLabel("")
+        self.content.setVisible(False)  # fermé par défaut
+
         self.content.setStyleSheet("""
             QLabel {
                 padding: 8px;
@@ -1345,28 +1350,23 @@ class CollapsibleWidget(QWidget):
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0,0,0,0)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.toggle_button)
         layout.addWidget(self.content)
 
         self.toggle_button.clicked.connect(self.toggle)
 
     def toggle(self):
+        is_open = self.toggle_button.isChecked()
 
-        visible = not self.content.isVisible()
+        self.content.setVisible(is_open)
 
-        self.content.setVisible(visible)
-
-        text = self.toggle_button.text()
-
-        if visible:
-            self.toggle_button.setText(
-                text.replace("▶", "▼")
-            )
+        # changement du symbole ▶ / ▼
+        if is_open:
+            self.toggle_button.setText(self.toggle_button.text().replace("▶", "▼"))
         else:
-            self.toggle_button.setText(
-                text.replace("▼", "▶")
-            )
+            self.toggle_button.setText(self.toggle_button.text().replace("▼", "▶"))
+
 class MainWindow(QMainWindow):
     # =====================================================
     # INTERFACE QT
