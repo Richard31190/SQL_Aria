@@ -1288,6 +1288,71 @@ def load_data():
 
     return Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, QA, MACHINE_SCHEDULE
 
+from PySide6.QtWidgets import (
+    QWidget,
+    QPushButton,
+    QLabel,
+    QVBoxLayout
+)
+
+class CollapsibleWidget(QWidget):
+
+    def __init__(self, title="Titre"):
+        super().__init__()
+
+        self.toggle_button = QPushButton(f"▼ {title}")
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setChecked(True)
+
+        self.toggle_button.setStyleSheet("""
+            QPushButton {
+                text-align: left;
+                padding: 8px;
+                font-weight: bold;
+                background-color: #eaf7ea;
+                border: 1px solid #bcdcbc;
+                border-radius: 6px;
+            }
+
+            QPushButton:hover {
+                background-color: #dff0df;
+            }
+        """)
+
+        self.content = QLabel("")
+        self.content.setStyleSheet("""
+            QLabel {
+                padding: 8px;
+                background-color: white;
+                border-left: 1px solid #bcdcbc;
+                border-right: 1px solid #bcdcbc;
+                border-bottom: 1px solid #bcdcbc;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0,0,0,0)
+        layout.addWidget(self.toggle_button)
+        layout.addWidget(self.content)
+
+        self.toggle_button.clicked.connect(self.toggle)
+
+    def toggle(self):
+
+        visible = not self.content.isVisible()
+
+        self.content.setVisible(visible)
+
+        text = self.toggle_button.text()
+
+        if visible:
+            self.toggle_button.setText(
+                text.replace("▶", "▼")
+            )
+        else:
+            self.toggle_button.setText(
+                text.replace("▼", "▶")
+            )
 class MainWindow(QMainWindow):
     # =====================================================
     # INTERFACE QT
@@ -1397,7 +1462,7 @@ class MainWindow(QMainWindow):
         # =========================
         # PATIENTS EN ATTENTE
         # =========================
-        if hasattr(widget, "patient_label"):
+        if hasattr(widget, "patient_widget"):
 
             counts = getattr(self, "Patient_EnAttente_count", {})
 
@@ -1424,7 +1489,7 @@ class MainWindow(QMainWindow):
                 else:
                     text = "Patients en cours de préparation : 0"
 
-            widget.patient_label.setText(text)
+            widget.patient_widget.toggle_button.setText(f"▼ {text}")
 
     def toggle_db_blink(self):
         # Clignottement du message d'alerte de la database SQL en cas de délai de refresh trop long (indication visuelle pour l'utilisateur)
@@ -1854,15 +1919,7 @@ class MainWindow(QMainWindow):
             }
         """)
 
-        patient_label = QLabel("Patients en cours de préparation : -")
-        patient_label.setStyleSheet("""
-            QLabel {
-                background-color: #eaf7ea;
-                padding: 6px;
-                font-weight: bold;
-                border-top: 1px solid #ccc;
-            }
-        """)
+        patient_widget = CollapsibleWidget("Patients en cours de préparation")
 
         table.setHorizontalHeaderLabels([
             "Status",
@@ -2059,11 +2116,11 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(table)
         layout.addWidget(footer_label)
-        layout.addWidget(patient_label)
+        layout.addWidget(patient_widget)
         widget.setLayout(layout)
 
         widget.footer_label = footer_label
-        widget.patient_label = patient_label
+        widget.patient_widget = patient_widget
         widget.table = table
 
         return widget
