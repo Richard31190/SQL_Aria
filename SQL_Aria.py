@@ -259,7 +259,7 @@ def dump_patient_full(session, ipp: str):
 # =========================================================
 # Get all data patient (DEBUG CALL)
 session = SessionLocal()
-dump_patient_full(session, "202608285")
+dump_patient_full(session, "200002134")
 session.close()
 """
 #endregion
@@ -1036,6 +1036,7 @@ def load_data():
             "first_name": patient.given,
             "patient_id": patient.id,
             "realisation_dosi_task": realisation_dosi_task_name,
+            "Workflow": cp.title
         })
 
     print(f"Patients CQ imminent trouvés : {len(rows2)}")
@@ -1046,10 +1047,16 @@ def load_data():
     from collections import defaultdict
 
     Patient_EnAttente_count = defaultdict(int)
+    Patient_EnAttente_details = {
+        "Tomo 2": [],
+        "Tomo 4": [],
+        "Tomo 7": [],
+        "Nova": []
+    }
 
     for row in rows2:
 
-        task_name = row.get("realisation_dosi_task")
+        task_name = row.get("Workflow")
 
         if not task_name:
             continue
@@ -1070,6 +1077,13 @@ def load_data():
 
         Patient_EnAttente_count[machine] += 1
 
+        Patient_EnAttente_details[machine].append({
+            "ipp": row["ipp"],
+            "last_name": row["last_name"],
+            "first_name": row["first_name"],
+            "task": row["realisation_dosi_task"],
+            "workflow": row["Workflow"]
+        })
 
     print("\nRépartition des machines :\n")
 
@@ -1286,7 +1300,7 @@ def load_data():
 
     check_existing_folders(Nova, Tomo2, Tomo4, Tomo7)
 
-    return Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, QA, MACHINE_SCHEDULE
+    return Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -1453,7 +1467,10 @@ class MainWindow(QMainWindow):
         # =========================
         if hasattr(widget, "footer_label") and hasattr(widget, "table"):
 
-            total = self.calculate_estimated_time(widget.table, tab_name)
+            total = self.calculate_estimated_time(
+                widget.table,
+                tab_name
+            )
 
             widget.footer_label.setText(
                 f"Temps estimé ({tab_name}) suivant sélection : {total} min"
@@ -1464,32 +1481,76 @@ class MainWindow(QMainWindow):
         # =========================
         if hasattr(widget, "patient_widget"):
 
-            counts = getattr(self, "Patient_EnAttente_count", {})
+            counts = getattr(
+                self,
+                "Patient_EnAttente_count",
+                {}
+            )
 
-            if not counts:
-                text = "Patients en cours de préparation : 0"
+            details = getattr(
+                self,
+                "Patient_EnAttente_details",
+                {}
+            )
+
+            # -------------------------
+            # Détermination machine
+            # -------------------------
+            machine = None
+
+            if tab_name == "Tomo2":
+                machine = "Tomo 2"
+
+            elif tab_name == "Tomo4":
+                machine = "Tomo 4"
+
+            elif tab_name == "Tomo7":
+                machine = "Tomo 7"
+
+            elif "Nova" in tab_name:
+                machine = "Nova"
+
+            # -------------------------
+            # Titre du widget
+            # -------------------------
+            count = counts.get(machine, 0)
+
+            title = (
+                f"Patients en cours de préparation : "
+                f"{machine} = {count}"
+            )
+
+            widget.patient_widget.toggle_button.setText(
+                f"▼ {title}"
+            )
+
+            # -------------------------
+            # Contenu du widget
+            # -------------------------
+            patients = details.get(machine, [])
+
+            if not patients:
+
+                widget.patient_widget.content.setText(
+                    "Aucun patient en préparation"
+                )
+
             else:
-                # 👉 filtrage par onglet
-                tab_key = tab_name.replace(" ", "").lower()
 
-                filtered = {}
+                lines = []
 
-                for k, v in counts.items():
+                for p in patients:
 
-                    k_norm = k.replace(" ", "").lower()
-
-                    # correspondance simple Tomo2 / Tomo4 / Tomo7 / Nova
-                    if tab_key in k_norm or k_norm in tab_key or tab_key == "nova(s)":
-                        filtered[k] = v
-
-                if filtered:
-                    text = "Patients en cours de préparation : " + " | ".join(
-                        f"{k} = {v}" for k, v in sorted(filtered.items())
+                    lines.append(
+                        f"{p['ipp']} | "
+                        f"{p['last_name']} "
+                        f"{p['first_name']} | "
+                        f"{p['workflow']}"
                     )
-                else:
-                    text = "Patients en cours de préparation : 0"
 
-            widget.patient_widget.toggle_button.setText(f"▼ {text}")
+                widget.patient_widget.content.setText(
+                    "\n".join(lines)
+                )
 
     def toggle_db_blink(self):
         # Clignottement du message d'alerte de la database SQL en cas de délai de refresh trop long (indication visuelle pour l'utilisateur)
@@ -1650,8 +1711,9 @@ class MainWindow(QMainWindow):
         # reload data
         try:
 
-            Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, QA, MACHINE_SCHEDULE = load_data()
+            Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE = load_data()
             self.Patient_EnAttente_count = Patient_EnAttente_count
+            self.Patient_EnAttente_details = Patient_EnAttente_details
 
             # La connexion revient après une panne
             if self.db_error_shown:
