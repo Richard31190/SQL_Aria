@@ -1295,16 +1295,16 @@ class MainWindow(QMainWindow):
     # =====================================================
     TIME_RULES = {
         "tomo": {
-            "fixed": 7,   # montage + démontage
-            "per_case": 10
+            "fixed": 7,   # montage + démontage 
+            "per_case": 12 # mesure + exploitation
         },
         "ruby": {
-            "fixed": 7,   # montage + démontage
-            "per_case": 10
+            "fixed": 8,   # montage + démontage + calibrage 
+            "per_case": 12 # mesure + exploitation
         },
         "octa": {
-            "fixed": 10,   # montage + démontage
-            "per_case": 8
+            "fixed": 11,   # montage + démontage + calibrage
+            "per_case": 9 # mesure + exploitation
         }
     }
 
