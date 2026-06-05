@@ -450,7 +450,7 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
     def check_dicom_and_pdf(folder_path):
 
         if not folder_path:
-            return False, False
+            return False, False, None
 
         try:
 
@@ -478,12 +478,13 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
 
             # aucun DICOM
             if not dcm_date:
-                return False, False
+                return False, False, None
 
             # =========================
             # RECHERCHE PDF
             # =========================
             pdf_ok = False
+            valid_pdf_date = None
 
             for root, dirs, files in os.walk(folder_path):
 
@@ -501,18 +502,19 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
                         if pdf_date.date() >= dcm_date.date():
 
                             pdf_ok = True
+                            valid_pdf_date = pdf_date
                             break
 
                 if pdf_ok:
                     break
 
-            return True, pdf_ok
+            return True, pdf_ok, valid_pdf_date
 
         except Exception as e:
 
             print(f"[DICOM/PDF ERROR] {folder_path} -> {e}")
 
-            return False, False
+            return False, False, None
 
     # =========================
     # PROCESS TOMO
@@ -528,10 +530,11 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
 
             row["existing_folder"] = folder_name is not None
 
-            dicom_ok, pdf_ok = check_dicom_and_pdf(folder_path)
+            dicom_ok, pdf_ok, pdf_date = check_dicom_and_pdf(folder_path)
 
             row["existing_dicom"] = dicom_ok
             row["existing_pdf"] = pdf_ok
+            row["pdf_date"] = pdf_date
 
             # mémorisation chemin trouvé
             row["folder_name"] = folder_name
@@ -585,10 +588,12 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
                     machine = "RA"
 
             row["existing_folder"] = folder_name is not None
-            dicom_ok, pdf_ok = check_dicom_and_pdf(folder_path)
+            dicom_ok, pdf_ok, pdf_date = check_dicom_and_pdf(folder_path)
+
 
             row["existing_dicom"] = dicom_ok
             row["existing_pdf"] = pdf_ok
+            row["pdf_date"] = pdf_date
 
             # =========================
             # MEMORISATION
@@ -1989,6 +1994,12 @@ class MainWindow(QMainWindow):
             item8 = QTableWidgetItem(folder_icon)
             item9 = QTableWidgetItem(dicom_icon)
             item_pdf = QTableWidgetItem(pdf_icon)
+            pdf_date = patient.get("pdf_date")
+
+            if pdf_date:
+                item_pdf.setToolTip(
+                    f"PDF validé : {pdf_date.strftime('%d/%m/%Y %H:%M')}"
+                )
             item10 = QTableWidgetItem(adress)
 
             # =========================
@@ -2019,7 +2030,9 @@ class MainWindow(QMainWindow):
 ]
             for i in items:
                 i.setBackground(QBrush(color))
-                i.setToolTip(tooltip)
+
+                if i is not item_pdf:
+                    i.setToolTip(tooltip)
 
             # =========================
             # INSERT INTO TABLE
