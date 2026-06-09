@@ -945,7 +945,7 @@ def load_data():
     for patient in patients_validation:
 
         # ==========================================
-        # Validation Médicale de la dosimétrie
+        # Validation Médicale de la dosimétrie = completed ou ready ou in-progress
         # ==========================================
         validation_tasks = [
             t
@@ -970,7 +970,7 @@ def load_data():
             continue
 
         # ==========================================
-        # Finalisation du dossier
+        # Finalisation du dossier = draft
         # ==========================================
         finalisation_tasks = [
             t
@@ -989,6 +989,55 @@ def load_data():
 
         if not finalisation_tasks:
             continue
+
+        # ==========================================
+        # Appeler patient (on récupère le status)
+        # ==========================================
+        appel_patient_task = next(
+            (
+                t
+                for cp in patient.careplans
+                for t in cp.tasks
+                if (
+                    t.display_focus
+                    and t.display_focus.lower().startswith("appeler patient")
+                )
+            ),
+            None
+        )
+
+        appel_patient_status = (
+            appel_patient_task.status
+            if appel_patient_task
+            else None
+        )
+
+        # ==========================================
+        # MET (si existant on prend la plus récente)
+        # ==========================================
+        met_appointments = [
+            appt
+            for appt in patient.appointments
+            if (
+                appt.service_type
+                and appt.service_type.upper().startswith("MET")
+                and appt.start_scheduled_period
+                and str(appt.status or "").lower() != "cancelled"
+            )
+        ]
+
+        met_appt = None
+
+        if met_appointments:
+            met_appt = max(
+                met_appointments,
+                key=lambda x: x.start_scheduled_period
+            )
+
+        met_start = (
+            met_appt.start_scheduled_period
+            if met_appt else None
+        )
 
         # ==========================================
         # Réalisation dosi (récupération du nom exact)
@@ -1028,6 +1077,11 @@ def load_data():
         })
 
         # ==========================================
+        # Patient susceptible de tomber prochainement (si validation_tasks = completed ou ready ou in-progress et date de MET existante)
+        # ==========================================
+        va_tomber = bool(validation_tasks and met_start)
+
+        # ==========================================
         # Construction de rows2
         # ==========================================
         rows2.append({
@@ -1037,7 +1091,10 @@ def load_data():
             "first_name": patient.given,
             "patient_id": patient.id,
             "realisation_dosi_task": realisation_dosi_task_name,
-            "Workflow": cp.title
+            "Workflow": cp.title,
+            "appel_patient_status": appel_patient_status,
+            "met_start": met_start,
+            "va_tomber": va_tomber
         })
 
     print(f"Patients CQ imminent trouvés : {len(rows2)}")
@@ -1083,6 +1140,8 @@ def load_data():
             "last_name": row["last_name"],
             "first_name": row["first_name"],
             "task": row["realisation_dosi_task"],
+            "RDVPatientcall": row["appel_patient_status"],
+            "MET": row["met_start"],
             "workflow": row["Workflow"]
         })
 
@@ -1540,17 +1599,21 @@ class MainWindow(QMainWindow):
                 lines = []
 
                 for p in patients:
+                    # si va_tomber = true alors rouge sinon noir
+                    color = "red" if p.get("va_tomber") else "black"
 
                     lines.append(
+                        f"<span style='color:{color};'>"
                         f"{p['ipp']} | "
                         f"{p['last_name']} "
                         f"{p['first_name']} | "
-                        f"{p['workflow']}"
+                        f"Patient Called : {p['RDVPatientcall']} | "
+                        f"MET : {p['MET']} | "
+                        f"Workflow : {p['workflow']}"
+                        f"</span>"
                     )
 
-                widget.patient_widget.content.setText(
-                    "\n".join(lines)
-                )
+                widget.patient_widget.content.setText("<br>".join(lines))
 
     def toggle_db_blink(self):
         # Clignottement du message d'alerte de la database SQL en cas de délai de refresh trop long (indication visuelle pour l'utilisateur)
