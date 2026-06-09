@@ -1596,24 +1596,38 @@ class MainWindow(QMainWindow):
 
             else:
 
-                lines = []
+                html = """
+                <table cellspacing="6">
+                    <tr>
+                        <th align="left">IPP</th>
+                        <th align="left">Patient</th>
+                        <th align="left">Called</th>
+                        <th align="left">MET</th>
+                        <th align="left">Workflow</th>
+                    </tr>
+                """
 
                 for p in patients:
-                    # si va_tomber = true alors rouge sinon noir
+
                     color = "red" if p.get("va_tomber") else "black"
 
-                    lines.append(
-                        f"<span style='color:{color};'>"
-                        f"{p['ipp']} | "
-                        f"{p['last_name']} "
-                        f"{p['first_name']} | "
-                        f"Patient Called : {p['RDVPatientcall']} | "
-                        f"MET : {p['MET']} | "
-                        f"Workflow : {p['workflow']}"
-                        f"</span>"
-                    )
+                    met = p.get("MET") or "-"
+                    called = p.get("RDVPatientcall") or "-"
+                    workflow = p.get("workflow") or "-"
 
-                widget.patient_widget.content.setText("<br>".join(lines))
+                    html += f"""
+                    <tr style="color:{color};">
+                        <td>{p['ipp']}</td>
+                        <td>{p['last_name']} {p['first_name']}</td>
+                        <td>{called}</td>
+                        <td>{met}</td>
+                        <td>{workflow}</td>
+                    </tr>
+                    """
+
+                html += "</table>"
+
+                widget.patient_widget.content.setText(html)
 
     def toggle_db_blink(self):
         # Clignottement du message d'alerte de la database SQL en cas de délai de refresh trop long (indication visuelle pour l'utilisateur)
