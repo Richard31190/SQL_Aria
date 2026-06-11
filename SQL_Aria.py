@@ -969,6 +969,14 @@ def load_data():
         if not validation_tasks:
             continue
 
+        # validation la plus récente
+        latest_validation = max(
+            validation_tasks,
+            key=lambda x: x.last_updated
+        )
+
+        validation_date = latest_validation.last_updated
+
         # ==========================================
         # Finalisation du dossier = draft
         # ==========================================
@@ -993,27 +1001,29 @@ def load_data():
         # ==========================================
         # Appeler patient (on récupère le status)
         # ==========================================
-        appel_patient_task = next(
-            (
-                t
-                for cp in patient.careplans
-                for t in cp.tasks
-                if (
-                    t.display_focus
-                    and t.display_focus.lower().startswith("appeler patient")
-                )
-            ),
-            None
-        )
+        
+        appel_patient_tasks = [
+            t
+            for cp in patient.careplans
+            for t in cp.tasks
+            if (
+                t.display_focus
+                and t.display_focus.lower().startswith("appeler patient")
+                and t.last_updated
+                and t.last_updated >= two_weeks_ago
+            )
+        ]
 
-        appel_patient_status = (
-            appel_patient_task.status
-            if appel_patient_task
+        latest_appel = (
+            max(appel_patient_tasks, key=lambda x: x.last_updated)
+            if appel_patient_tasks
             else None
         )
 
+        appel_patient_status = latest_appel.status if latest_appel else None
+
         # ==========================================
-        # MET (si existant on prend la plus récente)
+        # MET (si existant on prend la plus récente après la validation médicale)
         # ==========================================
         met_appointments = [
             appt
@@ -1022,6 +1032,7 @@ def load_data():
                 appt.service_type
                 and appt.service_type.upper().startswith("MET")
                 and appt.start_scheduled_period
+                and appt.start_scheduled_period > validation_date
                 and str(appt.status or "").lower() != "cancelled"
             )
         ]
@@ -1093,6 +1104,7 @@ def load_data():
             "realisation_dosi_task": realisation_dosi_task_name,
             "Workflow": cp.title,
             "appel_patient_status": appel_patient_status,
+            "validation_date": validation_date,
             "met_start": met_start,
             "va_tomber": va_tomber
         })
@@ -1140,7 +1152,8 @@ def load_data():
             "last_name": row["last_name"],
             "first_name": row["first_name"],
             "task": row["realisation_dosi_task"],
-            "RDVPatientcall": row["appel_patient_status"],
+            "called": row["appel_patient_status"],
+            "validation_date": row["validation_date"],
             "MET": row["met_start"],
             "workflow": row["Workflow"]
         })
@@ -1601,6 +1614,7 @@ class MainWindow(QMainWindow):
                     <tr>
                         <th align="left">IPP</th>
                         <th align="left">Patient</th>
+                        <th align="left">Valid. Méd.</th>
                         <th align="left">Called</th>
                         <th align="left">MET</th>
                         <th align="left">Workflow</th>
@@ -1611,14 +1625,24 @@ class MainWindow(QMainWindow):
 
                     color = "red" if p.get("va_tomber") else "black"
 
-                    met = p.get("MET") or "-"
-                    called = p.get("RDVPatientcall") or "-"
+                    met = (
+                        p.get("MET").strftime("%d/%m/%Y %H:%M")
+                        if p.get("MET")
+                        else "-"
+                    )
+                    called = p.get("called") or "-"
                     workflow = p.get("workflow") or "-"
+                    validation_date = (
+                        p.get("validation_date").strftime("%d/%m/%Y")
+                        if p.get("validation_date")
+                        else "-"
+                    )
 
                     html += f"""
                     <tr style="color:{color};">
                         <td>{p['ipp']}</td>
                         <td>{p['last_name']} {p['first_name']}</td>
+                        <td>{validation_date}</td>
                         <td>{called}</td>
                         <td>{met}</td>
                         <td>{workflow}</td>
