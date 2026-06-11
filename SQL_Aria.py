@@ -260,7 +260,7 @@ def dump_patient_full(session, ipp: str):
 # =========================================================
 # Get all data patient (DEBUG CALL)
 session = SessionLocal()
-dump_patient_full(session, "200002134")
+dump_patient_full(session, "201600480")
 session.close()
 """
 #endregion
@@ -999,6 +999,34 @@ def load_data():
             continue
 
         # ==========================================
+        # Réalisation du TDM
+        # ==========================================
+       
+        tdm_tasks = [
+            t
+            for cp in patient.careplans
+            for t in cp.tasks
+            if (
+                t.display_focus
+                and t.display_focus.lower().startswith("scanner de simulation")
+                and t.last_updated
+            )
+        ]
+
+        latest_tdm = (
+            max(tdm_tasks, key=lambda x: x.last_updated)
+            if tdm_tasks
+            else None
+        )
+
+        tdm_date = (
+            latest_tdm.last_updated
+            if latest_tdm
+            else None
+        )
+
+
+        # ==========================================
         # Appeler patient (on récupère le status)
         # ==========================================
         
@@ -1101,6 +1129,7 @@ def load_data():
             "last_name": patient.family_name_official,
             "first_name": patient.given,
             "patient_id": patient.id,
+            "tdm_date": tdm_date,
             "realisation_dosi_task": realisation_dosi_task_name,
             "Workflow": cp.title,
             "appel_patient_status": appel_patient_status,
@@ -1151,6 +1180,7 @@ def load_data():
             "ipp": row["ipp"],
             "last_name": row["last_name"],
             "first_name": row["first_name"],
+            "tdm_date": row["tdm_date"],
             "task": row["realisation_dosi_task"],
             "called": row["appel_patient_status"],
             "validation_date": row["validation_date"],
@@ -1614,6 +1644,7 @@ class MainWindow(QMainWindow):
                     <tr>
                         <th align="left">IPP</th>
                         <th align="left">Patient</th>
+                        <th align="left">TDM</th>
                         <th align="left">Valid. Méd.</th>
                         <th align="left">Called</th>
                         <th align="left">MET</th>
@@ -1637,11 +1668,17 @@ class MainWindow(QMainWindow):
                         if p.get("validation_date")
                         else "-"
                     )
+                    tdm_date = (
+                        p.get("tdm_date").strftime("%d/%m/%Y")
+                        if p.get("tdm_date")
+                        else "-"
+                    )
 
                     html += f"""
                     <tr style="color:{color};">
                         <td>{p['ipp']}</td>
                         <td>{p['last_name']} {p['first_name']}</td>
+                        <td>{tdm_date}</td>
                         <td>{validation_date}</td>
                         <td>{called}</td>
                         <td>{met}</td>
