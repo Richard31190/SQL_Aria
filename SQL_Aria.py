@@ -289,13 +289,13 @@ def load_today_patients_by_machine(session):
     )
 
     machines = {
-        "Tomo2": [],
-        "Tomo4": [],
-        "Tomo7": [],
-        "Nova3": [],
-        "Nova5": [],
-        "Halcyon6": [],
-        "Halcyon8": []
+        "TOMO2": [],
+        "TOMO4": [],
+        "TOMO7": [],
+        "NOVA3": [],
+        "NOVA5": [],
+        "HALCYON6": [],
+        "HALCYON8": []
     }
 
     for appt in appointments:
@@ -307,25 +307,25 @@ def load_today_patients_by_machine(session):
         )
 
         if device == "TOMO 2":
-            machine = "Tomo2"
+            machine = "TOMO2"
 
         elif device == "0210462":
-            machine = "Tomo4"
+            machine = "TOMO4"
 
         elif device == "RADI 7":
-            machine = "Tomo7"
+            machine = "TOMO7"
 
         elif device == "NOVA3":
-            machine = "Nova3"
+            machine = "NOVA3"
 
         elif device == "NOVA5":
-            machine = "Nova5"
+            machine = "NOVA5"
 
         elif device == "HALCYON6":
-            machine = "Halcyon6"
+            machine = "HALCYON6"
 
         elif device == "HALCYON8":
-            machine = "Halcyon8"
+            machine = "HALCYON8"
 
         else:
             continue
@@ -1560,7 +1560,7 @@ def load_data():
     # =========================================================
     machines, compte_down, remaining_today = load_today_patients_by_machine(session)
 
-    return Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE
+    return Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE, compte_down, remaining_today
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -1942,7 +1942,7 @@ class MainWindow(QMainWindow):
 
         self.machine_label.setText(text)
   
-    def update_qa_header(self, QA):
+    def update_qa_header(self, QA,compte_down,remaining_today):
 
         if not QA:
             self.qa_label.setText("Aucun créneaux CQ trouvé aujourd'hui")
@@ -1960,7 +1960,19 @@ class MainWindow(QMainWindow):
             hour = met_start.strftime("%H:%M") if met_start else "--:--"
 
             machine = row.get("machine", "")
-            service = row.get("service_type", "")
+            """
+            print("---- DEBUG QA MACHINE ----")
+            print("machine from QA:", repr(machine))
+            print("available keys:", remaining_today.keys())
+
+            for k in remaining_today.keys():
+                print(f"compare '{machine}' == '{k}' ->", machine == k)
+
+            remaining = remaining_today.get(machine, None)
+            print("RESULT:", remaining)
+            """
+            remaining = remaining_today.get(machine, None)
+            #service = row.get("service_type", "")
 
             # =========================
             # CURRENT SLOT ?
@@ -1971,26 +1983,25 @@ class MainWindow(QMainWindow):
                 and met_start <= now <= met_end
             )
 
-            if is_current:
+            if remaining is None:
+                extra = ""
+            else:
+                extra = f" ({remaining})*"
 
+            if is_current:
                 line = (
                     f'<span style="color:red;">'
-                    f'{hour} - {machine}'
+                    f'{hour} - {machine}{extra}'
                     f'</span>'
                 )
-
             else:
-
-                line = f"{hour} - {machine}"
+                line = f"{hour} - {machine}{extra}"
 
             lines.append(line)
 
-        text = (
-            "Prochains créneaux CQ :   "
-            + "   |   ".join(lines)
+        self.qa_label.setText(
+            "Prochains créneaux CQ :   " + "   |   ".join(lines)
         )
-
-        self.qa_label.setText(text)
 
     def refresh_data(self):
         print("Tentative de refresh :", datetime.now())
@@ -2006,7 +2017,7 @@ class MainWindow(QMainWindow):
         # reload data
         try:
 
-            Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE = load_data()
+            Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE, compte_down, remaining_today = load_data()
             self.Patient_EnAttente_count = Patient_EnAttente_count
             self.Patient_EnAttente_details = Patient_EnAttente_details
 
@@ -2034,9 +2045,8 @@ class MainWindow(QMainWindow):
                 self.db_error_shown = True
 
             return
-        #Nova, Tomo2, Tomo4, Tomo7, QA, MACHINE_SCHEDULE = load_data()
         
-        self.update_qa_header(QA)
+        self.update_qa_header(QA,compte_down,remaining_today)
         self.update_machine_footer(MACHINE_SCHEDULE)
 
         # puis update UI
@@ -2198,6 +2208,18 @@ class MainWindow(QMainWindow):
             }
         """)
         root_layout.addWidget(self.qa_label)
+
+        self.qa_legend = QLabel("* : patients restants")
+        self.qa_legend.setStyleSheet("""
+            QLabel {
+                color: gray;
+                font-size: 11px;
+                padding-left: 5px;
+            }
+        """)
+
+        root_layout.addWidget(self.qa_legend)
+
 
         self.machine_label = QLabel()
         self.machine_label.setStyleSheet("""
