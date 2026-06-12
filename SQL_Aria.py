@@ -341,7 +341,8 @@ def load_today_patients_by_machine(session):
 
             "start": appt.start_scheduled_period,
             "status": appt.status,
-            "device": device
+            "device": device,
+            "service_type": appt.service_type,
         })
 
     # ==========================================
@@ -367,6 +368,7 @@ def load_today_patients_by_machine(session):
 
             status = str(p.get("status") or "").lower()
             last_name = str(p.get("last_name") or "")
+            service_type = str(p.get("service_type") or "").lower()
 
             # =========================
             # EXCLUSIONS
@@ -375,6 +377,13 @@ def load_today_patients_by_machine(session):
                 continue
 
             if "TOP " in last_name:
+                continue
+
+            if (
+                "consultation" in service_type
+                or "interne" in service_type
+                or "sang" in service_type
+            ):
                 continue
 
             # =========================
@@ -404,6 +413,17 @@ def load_today_patients_by_machine(session):
         count = 0
 
         for p in patients:
+            if p.get("id") == 4:
+                continue
+
+            service_type = str(p.get("service_type") or "").lower()
+            if (
+                "cq" in service_type
+                or "consultation" in service_type
+                or "interne" in service_type
+                or "sang" in service_type
+            ):
+                continue
 
             status = str(p.get("status") or "").lower()
 
