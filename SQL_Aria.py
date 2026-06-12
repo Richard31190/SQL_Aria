@@ -1971,7 +1971,7 @@ class MainWindow(QMainWindow):
             remaining = remaining_today.get(machine, None)
             print("RESULT:", remaining)
             """
-            remaining = remaining_today.get(machine, None)
+            comptedown = compte_down.get(machine, None)
             #service = row.get("service_type", "")
 
             # =========================
@@ -1983,10 +1983,10 @@ class MainWindow(QMainWindow):
                 and met_start <= now <= met_end
             )
 
-            if remaining is None:
+            if comptedown is None or comptedown == "none":
                 extra = ""
             else:
-                extra = f" ({remaining})*"
+                extra = f" ({comptedown})*"
 
             if is_current:
                 line = (
