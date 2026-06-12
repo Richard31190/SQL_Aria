@@ -1558,7 +1558,7 @@ def load_data():
     # =========================================================
     # RECUPERE LES PATIENTS PROGRAMMES PAR MACHINE
     # =========================================================
-    TODAY_PATIENTS = load_today_patients_by_machine(session)
+    machines, compte_down, remaining_today = load_today_patients_by_machine(session)
 
     return Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE
 
