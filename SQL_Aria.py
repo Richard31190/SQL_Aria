@@ -265,6 +265,157 @@ session.close()
 """
 #endregion
 
+def load_today_patients_by_machine(session):
+    remaining_today = {}
+    now = datetime.now()
+
+    today_start = datetime.now().replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
+    today_end = today_start + timedelta(days=1)
+
+    appointments = (
+        session.query(Appointments)
+        .join(Appointments.patient)
+        .filter(
+            Appointments.start_scheduled_period >= today_start,
+            Appointments.start_scheduled_period < today_end
+        )
+        .all()
+    )
+
+    machines = {
+        "Tomo2": [],
+        "Tomo4": [],
+        "Tomo7": [],
+        "Nova3": [],
+        "Nova5": [],
+        "Halcyon6": [],
+        "Halcyon8": []
+    }
+
+    for appt in appointments:
+
+        device = (
+            str(appt.device).upper().strip()
+            if appt.device
+            else ""
+        )
+
+        if device == "TOMO 2":
+            machine = "Tomo2"
+
+        elif device == "0210462":
+            machine = "Tomo4"
+
+        elif device == "RADI 7":
+            machine = "Tomo7"
+
+        elif device == "NOVA3":
+            machine = "Nova3"
+
+        elif device == "NOVA5":
+            machine = "Nova5"
+
+        elif device == "HALCYON6":
+            machine = "Halcyon6"
+
+        elif device == "HALCYON8":
+            machine = "Halcyon8"
+
+        else:
+            continue
+
+        patient = appt.patient
+
+        machines[machine].append({
+
+            "id": patient.id,
+            "patient_id": appt.patient_id,
+            "last_name": patient.family_name_official,
+            "first_name": patient.given,
+
+            "start": appt.start_scheduled_period,
+            "status": appt.status,
+            "device": device
+        })
+
+    # ==========================================
+    # Tri chronologique croissant
+    # ==========================================
+    for machine_patients in machines.values():
+
+        machine_patients.sort(
+            key=lambda p: p["start"] or datetime.max
+        )
+
+    # ==========================================
+    # DECOMPTE DU NOMBRE DE PATIENT AVANT CRENEAU CQ HEBDOMADAIRE
+    # ==========================================
+    compte_down = {}
+
+    for machine, patients in machines.items():
+
+        countdown = None
+        index = 0
+
+        for p in patients:
+
+            status = str(p.get("status") or "").lower()
+            last_name = str(p.get("last_name") or "")
+
+            # =========================
+            # EXCLUSIONS
+            # =========================
+            if status not in ["arrived", "booked"]:
+                continue
+
+            if "TOP " in last_name:
+                continue
+
+            # =========================
+            # CQ HEBDOMADAIRE CHECK
+            # =========================
+            if "CQ HEBDOMADAIRE" in last_name:
+                countdown = index
+                break
+
+            index += 1
+
+        # =========================
+        # RESULT
+        # =========================
+        if countdown is None:
+            compte_down[machine] = "none"
+        else:
+            compte_down[machine] = countdown
+    
+
+    # =========================
+    # CALCUL DU NOMBRE DE PATIENTS RESTANT AVANT LA FIN DE LA JOURNEE
+    # =========================
+
+    for machine, patients in machines.items():
+
+        count = 0
+
+        for p in patients:
+
+            status = str(p.get("status") or "").lower()
+
+            if status in ["cancelled", "fulfilled"]:
+                continue
+
+            if p["start"] >= now:
+                count += 1
+
+        remaining_today[machine] = count
+
+    return machines, compte_down, remaining_today
 
 def create_centered_checkbox(checked=True):
     # =========================================================
@@ -1402,6 +1553,12 @@ def load_data():
     Tomo7 = sort_by_met_start(Tomo7)
 
     check_existing_folders(Nova, Tomo2, Tomo4, Tomo7)
+
+
+    # =========================================================
+    # RECUPERE LES PATIENTS PROGRAMMES PAR MACHINE
+    # =========================================================
+    TODAY_PATIENTS = load_today_patients_by_machine(session)
 
     return Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE
 
