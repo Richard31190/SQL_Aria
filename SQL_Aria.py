@@ -290,8 +290,8 @@ def load_today_patients_by_machine(session):
 
     machines = {
         "TOMO2": [],
-        "TOMO4": [],
-        "TOMO7": [],
+        "0210462": [],
+        "RADI7": [],
         "NOVA3": [],
         "NOVA5": [],
         "HALCYON6": [],
@@ -310,10 +310,10 @@ def load_today_patients_by_machine(session):
             machine = "TOMO2"
 
         elif device == "0210462":
-            machine = "TOMO4"
+            machine = "0210462"
 
         elif device == "RADI 7":
-            machine = "TOMO7"
+            machine = "RADI7"
 
         elif device == "NOVA3":
             machine = "NOVA3"
@@ -1883,7 +1883,7 @@ class MainWindow(QMainWindow):
                 }
             """)
 
-    def update_machine_footer(self, schedule):
+    def update_machine_footer(self, schedule, remaining_today):
         MACHINE_LABEL = {
             "TOMO2": "Tomo 2",
             "0210462": "Tomo 4",
@@ -1936,13 +1936,21 @@ class MainWindow(QMainWindow):
             hour = start.strftime("%H:%M")
             machine_key = normalize_machine(machine)
             machine_label = MACHINE_LABEL.get(machine_key, machine_key)
-            lines.append(f"{machine_label}: {hour}")
+
+            count = remaining_today.get(machine_key, None)
+            
+            if count is None or count == "none":
+                extra = ""
+            else:
+                extra = f" ({count})"
+
+            lines.append(f"{machine_label}: {hour}{extra}*")
 
         text = "Fin de journée :   " + "   |   ".join(lines)
 
         self.machine_label.setText(text)
   
-    def update_qa_header(self, QA,compte_down,remaining_today):
+    def update_qa_header(self, QA,compte_down):
 
         if not QA:
             self.qa_label.setText("Aucun créneaux CQ trouvé aujourd'hui")
@@ -1960,19 +1968,8 @@ class MainWindow(QMainWindow):
             hour = met_start.strftime("%H:%M") if met_start else "--:--"
 
             machine = row.get("machine", "")
-            """
-            print("---- DEBUG QA MACHINE ----")
-            print("machine from QA:", repr(machine))
-            print("available keys:", remaining_today.keys())
 
-            for k in remaining_today.keys():
-                print(f"compare '{machine}' == '{k}' ->", machine == k)
-
-            remaining = remaining_today.get(machine, None)
-            print("RESULT:", remaining)
-            """
             comptedown = compte_down.get(machine, None)
-            #service = row.get("service_type", "")
 
             # =========================
             # CURRENT SLOT ?
@@ -2046,8 +2043,8 @@ class MainWindow(QMainWindow):
 
             return
         
-        self.update_qa_header(QA,compte_down,remaining_today)
-        self.update_machine_footer(MACHINE_SCHEDULE)
+        self.update_qa_header(QA,compte_down)
+        self.update_machine_footer(MACHINE_SCHEDULE,remaining_today)
 
         # puis update UI
         self.tabs.clear()
@@ -2209,16 +2206,7 @@ class MainWindow(QMainWindow):
         """)
         root_layout.addWidget(self.qa_label)
 
-        self.qa_legend = QLabel("* : patients restants")
-        self.qa_legend.setStyleSheet("""
-            QLabel {
-                color: gray;
-                font-size: 11px;
-                padding-left: 5px;
-            }
-        """)
-
-        root_layout.addWidget(self.qa_legend)
+        
 
 
         self.machine_label = QLabel()
@@ -2234,6 +2222,16 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(self.machine_label)
 
+        self.qa_legend = QLabel("* : patients restants")
+        self.qa_legend.setStyleSheet("""
+            QLabel {
+                color: gray;
+                font-size: 11px;
+                padding-left: 5px;
+            }
+        """)
+
+        root_layout.addWidget(self.qa_legend)
 
         # =========================
         # TABS
