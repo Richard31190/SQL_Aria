@@ -340,6 +340,7 @@ def load_today_patients_by_machine(session):
             "first_name": patient.given,
 
             "start": appt.start_scheduled_period,
+            "end": appt.end_scheduled_period,
             "status": appt.status,
             "device": device,
             "service_type": appt.service_type,
@@ -436,6 +437,48 @@ def load_today_patients_by_machine(session):
         remaining_today[machine] = count
 
     return machines, compte_down, remaining_today
+
+def check_qa_overlap(qa_row, machines):
+
+    machine = qa_row.get("machine")
+    met_start = qa_row.get("met_start")
+    met_end = qa_row.get("met_end")
+
+    if not machine or not met_start or not met_end:
+        return 0
+
+    overlap_minutes = 0
+
+    for task in machines.get(machine, []):
+
+        task_start = task.get("start")
+        task_end = task.get("end")
+
+        if not task_start or not task_end:
+            continue
+
+        # =========================
+        # EXCLUSION DE LA TACHE CQ
+        # =========================
+        if (
+            abs((task_start - met_start).total_seconds()) < 60
+            and
+            abs((task_end - met_end).total_seconds()) < 60
+        ):
+            continue
+
+        # =========================
+        # CHEVAUCHEMENT
+        # =========================
+        overlap_start = max(task_start, met_start)
+        overlap_end = min(task_end, met_end)
+
+        if overlap_start < overlap_end:
+            overlap_minutes += (
+                overlap_end - overlap_start
+            ).total_seconds() / 60
+
+    return round(overlap_minutes)
 
 def create_centered_checkbox(checked=True):
     # =========================================================
@@ -1580,7 +1623,7 @@ def load_data():
     # =========================================================
     machines, compte_down, remaining_today = load_today_patients_by_machine(session)
 
-    return Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE, compte_down, remaining_today
+    return Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE, machines, compte_down, remaining_today
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -1969,27 +2012,83 @@ class MainWindow(QMainWindow):
         text = "Fin de journée :   " + "   |   ".join(lines)
 
         self.machine_label.setText(text)
-  
-    def update_qa_header(self, QA,compte_down):
+    
+    def check_qa_overlap(self, qa_row, machines):
+
+        machine = qa_row.get("machine")
+        met_start = qa_row.get("met_start")
+        met_end = qa_row.get("met_end")
+
+        if not machine or not met_start or not met_end:
+            return 0
+
+        overlap_minutes = 0
+
+        for task in machines.get(machine, []):
+
+            task_start = task.get("start")
+            task_end = task.get("end")
+
+            if not task_start or not task_end:
+                continue
+
+            # =========================
+            # EXCLUSION DE LA TACHE CQ
+            # =========================
+            if (
+                abs((task_start - met_start).total_seconds()) < 60
+                and
+                abs((task_end - met_end).total_seconds()) < 60
+            ):
+                continue
+
+            # =========================
+            # CHEVAUCHEMENT
+            # =========================
+            overlap_start = max(task_start, met_start)
+            overlap_end = min(task_end, met_end)
+
+            if overlap_start < overlap_end:
+                overlap_minutes += (
+                    overlap_end - overlap_start
+                ).total_seconds() / 60
+
+        return round(overlap_minutes)
+
+    def update_qa_header(self, QA, compte_down, machines):
 
         if not QA:
             self.qa_label.setText("Aucun créneaux CQ trouvé aujourd'hui")
             return
 
         now = datetime.now()
-
         lines = []
 
         for row in QA:
 
             met_start = row.get("met_start")
             met_end = row.get("met_end")
+            machine = row.get("machine", "")
 
             hour = met_start.strftime("%H:%M") if met_start else "--:--"
 
-            machine = row.get("machine", "")
-
+            # =========================
+            # COUNTDOWN CQ
+            # =========================
             comptedown = compte_down.get(machine, None)
+
+            if comptedown is None or comptedown == "none":
+                extra = ""
+            else:
+                extra = f" ({comptedown})*"
+
+            # =========================
+            # OVERLAP CHECK CQ
+            # =========================
+            reduction = self.check_qa_overlap(row, machines)
+
+            if reduction > 0:
+                extra += f" ⚠️ -{reduction} min"
 
             # =========================
             # CURRENT SLOT ?
@@ -1999,11 +2098,6 @@ class MainWindow(QMainWindow):
                 and met_end
                 and met_start <= now <= met_end
             )
-
-            if comptedown is None or comptedown == "none":
-                extra = ""
-            else:
-                extra = f" ({comptedown})*"
 
             if is_current:
                 line = (
@@ -2034,7 +2128,7 @@ class MainWindow(QMainWindow):
         # reload data
         try:
 
-            Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE, compte_down, remaining_today = load_data()
+            Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE, machines, compte_down, remaining_today = load_data()
             self.Patient_EnAttente_count = Patient_EnAttente_count
             self.Patient_EnAttente_details = Patient_EnAttente_details
 
@@ -2063,7 +2157,7 @@ class MainWindow(QMainWindow):
 
             return
         
-        self.update_qa_header(QA,compte_down)
+        self.update_qa_header(QA,compte_down,machines)
         self.update_machine_footer(MACHINE_SCHEDULE,remaining_today)
 
         # puis update UI
