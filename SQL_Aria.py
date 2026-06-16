@@ -331,11 +331,20 @@ def load_today_patients_by_machine(session):
             continue
 
         # =========================
-        # EXCLUSION CQ (AJOUT ICI)
+        # EXCLUSION CQ
         # =========================
         service_type = str(appt.service_type or "").lower()
+        last_name = str(appt.patient.family_name_official or "").lower()
+        # =========================
+        # GARDER CQ HEBDOMADAIRE
+        # =========================
+        if "cq hebdomadaire" in last_name:
+            pass  # on laisse passer cette tâche
 
-        if (
+        # =========================
+        # EXCLUSION CQ PATIENT / PHYSIQUE
+        # =========================
+        elif (
             "cq patient" in service_type
             or "cq physique" in service_type
         ):
@@ -430,8 +439,10 @@ def load_today_patients_by_machine(session):
 
             service_type = str(p.get("service_type") or "").lower()
             if (
-                "cq" in service_type
-                or "consultation" in service_type
+                #"cq" in service_type
+                "consultation" in service_type
+                #or "cq patient" in service_type
+                #or "cq physique" in service_type
                 or "interne" in service_type
                 or "sang" in service_type
             ):
