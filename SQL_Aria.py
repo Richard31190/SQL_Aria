@@ -2035,6 +2035,76 @@ class MainWindow(QMainWindow):
 
         self.machine_label.setText(text)
     
+        from datetime import timedelta
+
+    def compute_real_cq_slot(self, qa_row, machines):
+
+        machine = qa_row.get("machine")
+        cq_start = qa_row.get("met_start")
+        cq_end = qa_row.get("met_end")
+
+        if not machine or not cq_start or not cq_end:
+            return None, None, False
+
+        intervals = []
+
+        # =========================
+        # récupérer toutes les tâches qui empiètent
+        # =========================
+        for task in machines.get(machine, []):
+
+            start = task.get("start")
+            end = task.get("end")
+
+            if not start or not end:
+                continue
+
+            # ignore CQ tasks si jamais présentes
+            service_type = str(task.get("service_type") or "").lower()
+            if "cq patient" in service_type or "cq physique" in service_type:
+                continue
+
+            # overlap avec CQ ?
+            if end <= cq_start or start >= cq_end:
+                continue
+
+            # zone de coupure
+            intervals.append((max(start, cq_start), min(end, cq_end)))
+
+        # =========================
+        # si aucune coupure → créneau intact
+        # =========================
+        if not intervals:
+            return cq_start, cq_end, True
+
+        # =========================
+        # on construit les trous (inversion des overlaps)
+        # =========================
+        intervals.sort()
+
+        free_slots = []
+        cursor = cq_start
+
+        for s, e in intervals:
+
+            if s > cursor:
+                free_slots.append((cursor, s))
+
+            cursor = max(cursor, e)
+
+        if cursor < cq_end:
+            free_slots.append((cursor, cq_end))
+
+        # =========================
+        # on prend le plus grand segment restant (CQ exploitable)
+        # =========================
+        if not free_slots:
+            return None, None, False
+
+        best_slot = max(free_slots, key=lambda x: (x[1] - x[0]))
+
+        return best_slot[0], best_slot[1], False
+
     def check_qa_overlap(self, qa_row, machines):
 
         machine = qa_row.get("machine")
@@ -2092,7 +2162,15 @@ class MainWindow(QMainWindow):
             met_end = row.get("met_end")
             machine = row.get("machine", "")
 
-            hour = met_start.strftime("%H:%M") if met_start else "--:--"
+            # =========================
+            # RECOMPUTE CQ REAL SLOT
+            # =========================
+            real_start, real_end, is_full = self.compute_real_cq_slot(row, machines)
+
+            if real_start and real_end:
+                hour = f"{real_start.strftime('%H:%M')} → {real_end.strftime('%H:%M')}"
+            else:
+                hour = met_start.strftime("%H:%M") if met_start else "--:--"
 
             # =========================
             # COUNTDOWN CQ
@@ -2111,6 +2189,12 @@ class MainWindow(QMainWindow):
 
             if reduction > 0:
                 extra += f" ⚠️ -{reduction} min"
+
+            # =========================
+            # STATUS CQ SLOT
+            # =========================
+            if real_start and real_end:
+                extra += " ⚠️" if not is_full else " ✅"
 
             # =========================
             # CURRENT SLOT ?
