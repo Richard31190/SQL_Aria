@@ -330,6 +330,17 @@ def load_today_patients_by_machine(session):
         else:
             continue
 
+        # =========================
+        # EXCLUSION CQ (AJOUT ICI)
+        # =========================
+        service_type = str(appt.service_type or "").lower()
+
+        if (
+            "cq patient" in service_type
+            or "cq physique" in service_type
+        ):
+            continue
+
         patient = appt.patient
 
         machines[machine].append({
