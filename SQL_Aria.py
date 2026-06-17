@@ -827,6 +827,7 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
             row["existing_dicom"] = dicom_ok
             row["existing_pdf"] = pdf_ok
             row["pdf_date"] = pdf_date
+            row["energy"] = energy
 
             # mémorisation chemin trouvé
             row["folder_name"] = folder_name
@@ -2560,7 +2561,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
 
         table = QTableWidget()
-        table.setColumnCount(14)
+        table.setColumnCount(15)
 
         footer_label = QLabel("Temps estimé suivant sélection :")
         footer_label.setStyleSheet("""
@@ -2588,7 +2589,8 @@ class MainWindow(QMainWindow):
             "Folder",
             "Dicom",
             "PDF",
-            "Adress"
+            "Adress",
+            "Energy"
             
         ])
 
@@ -2711,7 +2713,8 @@ class MainWindow(QMainWindow):
                     f"PDF validé : {pdf_date.strftime('%d/%m/%Y %H:%M')}"
                 )
             item10 = QTableWidgetItem(adress)
-
+            item_energy = QTableWidgetItem(str(patient.get("energy") or ""))
+            
             # =========================
             # CENTER ICONS
             # =========================
@@ -2720,6 +2723,8 @@ class MainWindow(QMainWindow):
             item9.setTextAlignment(Qt.AlignCenter)
             item_cq_patient.setTextAlignment(Qt.AlignCenter)
             item_pdf.setTextAlignment(Qt.AlignCenter)
+            item_energy.setTextAlignment(Qt.AlignCenter)
+
             # =========================
             # TOOLTIP + COLOR (sur toute la ligne)
             # =========================
@@ -2736,7 +2741,8 @@ class MainWindow(QMainWindow):
     item8,
     item9,
     item_pdf,
-    item10
+    item10,
+    item_energy
 ]
             for i in items:
                 i.setBackground(QBrush(color))
@@ -2761,7 +2767,7 @@ class MainWindow(QMainWindow):
             table.setItem(row, 11, item9)
             table.setItem(row, 12, item_pdf)
             table.setItem(row, 13, item10)
-
+            table.setItem(row, 14, item_energy)
 
         table.resizeColumnsToContents()
 
