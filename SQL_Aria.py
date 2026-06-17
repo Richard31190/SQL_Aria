@@ -54,6 +54,7 @@ from PySide6.QtCore import Qt
 
 from PySide6.QtWidgets import QMessageBox
 import sys
+import pydicom
 
 # =========================================================
 # Configuration for SQL databa access
@@ -684,17 +685,18 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
     # =========================
     # CHECK DICOM AND PDF FILES
     # =========================
-    def check_dicom_and_pdf(folder_path):
+    def check_dicom_and_pdf(folder_path, read_energy=False):
 
         if not folder_path:
-            return False, False, None
+            return False, False, None, None
 
         try:
 
             dcm_date = None
+            energy = None
 
             # =========================
-            # RECHERCHE DICOM
+            # PASS 1 : DICOM DATE
             # =========================
             for root, dirs, files in os.walk(folder_path):
 
@@ -715,10 +717,64 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
 
             # aucun DICOM
             if not dcm_date:
-                return False, False, None
+                return False, False, None, None
 
             # =========================
-            # RECHERCHE PDF
+            # PASS 2 : RP ENERGY
+            # =========================
+            if read_energy:
+
+                for root, dirs, files in os.walk(folder_path):
+
+                    for file in files:
+
+                        name = file.upper()
+
+                        if (
+                            energy is None
+                            and "RP" in name
+                            and file.lower().endswith(".dcm")
+                        ):
+
+                            try:
+                                import pydicom
+
+                                ds = pydicom.dcmread(
+                                    os.path.join(root, file),
+                                    stop_before_pixels=True
+                                )
+
+                                if hasattr(ds, "BeamSequence") and ds.BeamSequence:
+
+                                    beam = ds.BeamSequence[0]
+
+                                    energy_val = str(
+                                        beam.ControlPointSequence[0].NominalBeamEnergy
+                                    )
+
+                                    mode = "X"
+
+                                    try:
+                                        fluence_id = beam.PrimaryFluenceModeSequence[0].FluenceModeID
+
+                                        if fluence_id and "FFF" in str(fluence_id).upper():
+                                            mode = "FFF"
+
+                                    except Exception:
+                                        mode = "X"
+
+                                    energy = f"{energy_val}{mode}"
+
+                                    break
+
+                            except Exception as e:
+                                print(f"[RP READ ERROR] {file} -> {e}")
+
+                    if energy:
+                        break
+
+            # =========================
+            # PASS 3 : PDF
             # =========================
             pdf_ok = False
             valid_pdf_date = None
@@ -735,7 +791,6 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
                             os.path.getmtime(pdf_path)
                         )
 
-                        # même jour ou plus récent
                         if pdf_date.date() >= dcm_date.date():
 
                             pdf_ok = True
@@ -745,13 +800,13 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
                 if pdf_ok:
                     break
 
-            return True, pdf_ok, valid_pdf_date
+            return True, pdf_ok, valid_pdf_date, energy
 
         except Exception as e:
 
             print(f"[DICOM/PDF ERROR] {folder_path} -> {e}")
 
-            return False, False, None
+            return False, False, None, None
 
     # =========================
     # PROCESS TOMO
@@ -767,7 +822,7 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
 
             row["existing_folder"] = folder_name is not None
 
-            dicom_ok, pdf_ok, pdf_date = check_dicom_and_pdf(folder_path)
+            dicom_ok, pdf_ok, pdf_date, energy = check_dicom_and_pdf(folder_path)
 
             row["existing_dicom"] = dicom_ok
             row["existing_pdf"] = pdf_ok
@@ -825,12 +880,13 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
                     machine = "RA"
 
             row["existing_folder"] = folder_name is not None
-            dicom_ok, pdf_ok, pdf_date = check_dicom_and_pdf(folder_path)
+            dicom_ok, pdf_ok, pdf_date, energy = check_dicom_and_pdf(folder_path, True)
 
 
             row["existing_dicom"] = dicom_ok
             row["existing_pdf"] = pdf_ok
             row["pdf_date"] = pdf_date
+            row["energy"] = energy
 
             # =========================
             # MEMORISATION
