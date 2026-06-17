@@ -827,7 +827,7 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
             row["existing_dicom"] = dicom_ok
             row["existing_pdf"] = pdf_ok
             row["pdf_date"] = pdf_date
-            row["energy"] = energy
+            row["energy"] = "6FFF"
 
             # mémorisation chemin trouvé
             row["folder_name"] = folder_name
