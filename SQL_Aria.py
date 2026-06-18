@@ -1896,8 +1896,9 @@ class MainWindow(QMainWindow):
 
     def calculate_estimated_time(self, table_widget, tab_name):
         # =========================================================
-        # Calcul du temps estimé pour la réalisation des CQ en fonction du nombre de patients sélectionnés dans le tableau, et de la machine concernée (TOMO 2, TOMO 4, TOMO 7, NOVA)
+        # Calcul du temps estimé pour la réalisation des CQ
         # =========================================================
+
         used_categories = {
             "tomo": 0,
             "ruby": 0,
@@ -1905,6 +1906,11 @@ class MainWindow(QMainWindow):
         }
 
         total_minutes = 0
+
+        # =========================
+        # stockage TOMO BeamOn
+        # =========================
+        tomo_beam_on_values = []
 
         # =========================
         # 1) COMPTER LES CASES
@@ -1931,9 +1937,27 @@ class MainWindow(QMainWindow):
                     break
 
             if not matched:
-                # catégorie inconnue → fallback
                 used_categories.setdefault("other", 0)
                 used_categories["other"] += 1
+
+            # =========================
+            # récupération BeamOn TOMO
+            # =========================
+            if "tomo" in task_text:
+                beam_item = table_widget.item(row, 15)  # Beam On (min)
+                if beam_item:
+                    try:
+                        tomo_beam_on_values.append(float(beam_item.text()))
+                    except:
+                        pass
+
+        # =========================
+        # DEBUG (optionnel)
+        # =========================
+        if tomo_beam_on_values:
+            print("===== TOMO Beam On (min) =====")
+            print(tomo_beam_on_values)
+            print("===============================")
 
         # =========================
         # 2) CALCUL TEMPS
@@ -1945,14 +1969,26 @@ class MainWindow(QMainWindow):
 
             rule = self.TIME_RULES.get(key, self.DEFAULT_TIME)
 
-            # 1 seul montage/démontage par catégorie utilisée
-            total_minutes += rule["fixed"]
+            # =========================
+            # CAS TOMO (spécial)
+            # =========================
+            if key == "tomo":
 
-            # temps par CQ
-            total_minutes += count * rule["per_case"]
+                # 1 seul setup (fixed)
+                total_minutes += rule["fixed"]
 
-        return total_minutes
-    
+                # par patient sélectionné :
+                # 2 min + beam-on
+                for beam in tomo_beam_on_values:
+                    total_minutes += 2 + beam
+
+            else:
+                # comportement standard
+                total_minutes += rule["fixed"]
+                total_minutes += count * rule["per_case"]
+
+        return round(total_minutes)
+
     def on_tab_changed(self, index):
 
         tab_text = self.tabs.tabText(index)
