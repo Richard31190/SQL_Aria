@@ -2011,7 +2011,7 @@ class MainWindow(QMainWindow):
                 # par patient sélectionné :
                 # 2 min + beam-on
                 for beam in tomo_beam_on_values:
-                    total_minutes += 2 + beam
+                    total_minutes += 3 + beam
 
             else:
                 # comportement standard
@@ -2866,6 +2866,10 @@ class MainWindow(QMainWindow):
             # =========================
             item0 = QTableWidgetItem(dot)
             item_select_widget = create_centered_checkbox(True)
+
+            item_select_widget.checkbox.stateChanged.connect(
+                self.refresh_current_tab_footer
+            )
             item1 = QTableWidgetItem(str(met_date))
             item2 = QTableWidgetItem(f'{patient["last_name"]} {patient["first_name"]}')
             item3 = QTableWidgetItem(str(patient["ipp"]))
