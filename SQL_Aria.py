@@ -19,6 +19,7 @@ python -m PyInstaller SQL_Aria.py --clean --noconfirm --onedir --windowed --name
 
 
 import os
+import re
 import traceback
 import pandas as pd
 
@@ -719,6 +720,7 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
             if not dcm_date:
                 return False, False, None, None
 
+
             # =========================
             # PASS 2 : RP ENERGY
             # =========================
@@ -811,6 +813,96 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
     # =========================
     # PROCESS TOMO
     # =========================
+    def extract_tokens(raw_bytes):
+
+        text = raw_bytes.decode("latin-1", errors="ignore")
+
+        # 1. remplacer NULL + contrôles
+        text = text.replace("\x00", " ")
+
+        # 2. garder uniquement chunks exploitables
+        tokens = re.findall(r"[A-Za-z0-9_.\-\/\^]+", text)
+
+        return tokens
+
+    def is_tomo_scandidos_file(file):
+        """
+        Détecte le fichier ScandiDos Tomo (sans extension standard)
+        """
+        name, ext = os.path.splitext(file)
+
+        # pas une extension classique
+        if ext.lower() in [".dcm", ".pdf", ".xml", ".json"]:
+            return False
+
+        # heuristique Tomo UID-like
+        if name.count(".") >= 5 and name.replace(".", "").isdigit():
+            return True
+
+        # fallback : parfois pas totalement numérique
+        if "114358" in name:
+            return True
+
+        return False
+
+    def parse_tomo_scandi_tokens(tokens):
+
+        plan = None
+        fraction = None
+        duration = None
+
+        for i, t in enumerate(tokens):
+
+            # =========================
+            # FRACTION (QA)
+            # =========================
+            if "_QA" in t:
+                fraction = t
+
+            # =========================
+            # PLAN (heuristique)
+            # =========================
+            if plan is None:
+                if "split" in t.lower() or "course" in t.lower():
+                    plan = t
+
+            # =========================
+            # VERIFICATION BLOCK
+            # =========================
+            if t == "VERIFICATION":
+
+                # recherche durée après PATIENT block
+                for j in range(i, min(i+20, len(tokens))):
+
+                    if re.match(r"\d+\.\d{4,}", tokens[j]):
+                        duration = float(tokens[j])
+                        break
+
+        return plan, fraction, duration
+
+    def read_tomo_scandidos_file(folder_path):
+
+        
+
+        for root, dirs, files in os.walk(folder_path):
+
+            for file in files:
+
+                if is_tomo_scandidos_file(file):
+
+                    full_path = os.path.join(root, file)
+
+                    with open(full_path, "rb") as f:
+                        raw = f.read()
+
+                    tokens = extract_tokens(raw)
+
+                    plan, fraction, duration = parse_tomo_scandi_tokens(tokens)
+
+                    return plan, fraction, duration
+
+        return None, None, None
+
     def process_tomo(table, cache):
 
         for row in table:
@@ -823,7 +915,12 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
             row["existing_folder"] = folder_name is not None
 
             dicom_ok, pdf_ok, pdf_date, energy = check_dicom_and_pdf(folder_path)
+            plan, fraction, duration = read_tomo_scandidos_file(folder_path)
 
+            #row["tomo_plan"] = plan
+            row["tomo_fraction"] = fraction
+            row["tomo_duration_min"] = duration
+            row["tomo_duration_sec"] = duration * 60 if duration else None
             row["existing_dicom"] = dicom_ok
             row["existing_pdf"] = pdf_ok
             row["pdf_date"] = pdf_date
