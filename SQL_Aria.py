@@ -2651,14 +2651,17 @@ class MainWindow(QMainWindow):
         self.blink_timer.timeout.connect(self.toggle_db_blink)
         self.blink_timer.start(500)  # 500 ms
         
-
     def create_table_tab(self, data):
 
         widget = QWidget()
         layout = QVBoxLayout()
 
         table = QTableWidget()
-        table.setColumnCount(15)
+
+        # =========================
+        # NEW COLUMN COUNT (15 + 2 = 17)
+        # =========================
+        table.setColumnCount(17)
 
         footer_label = QLabel("Temps estimé suivant sélection :")
         footer_label.setStyleSheet("""
@@ -2672,6 +2675,9 @@ class MainWindow(QMainWindow):
 
         patient_widget = CollapsibleWidget("Patients en cours de préparation")
 
+        # =========================
+        # HEADERS
+        # =========================
         table.setHorizontalHeaderLabels([
             "Status",
             "Select",
@@ -2687,11 +2693,11 @@ class MainWindow(QMainWindow):
             "Dicom",
             "PDF",
             "Adress",
-            "Energy"
-            
+            "Energy",
+            "Duration (min)",   # NEW
+            "Fraction"         # NEW
         ])
 
-        # info popup sur les headers
         header_tooltips = [
             "Priorité du dossier",
             "Date MET prévue",
@@ -2705,14 +2711,20 @@ class MainWindow(QMainWindow):
             "Dossier patient existant sur le réseau IUCT ?",
             "Fichiers DICOM (calculs) présents dans le dossier ?",
             "Rapport PDF présent et daté du même jour ou après les exports DICOM",
-            "Nom du dossier où le calcul à été exporté"
+            "Nom du dossier où le calcul à été exporté",
+            "Energy",
+            "Durée en minutes",   # NEW
+            "Fraction"         # NEW
         ]
 
         for col in range(len(header_tooltips)):
             table.horizontalHeaderItem(col).setToolTip(header_tooltips[col])
-        
-            table.setRowCount(len(data))
 
+        table.setRowCount(len(data))
+
+        # =========================
+        # ROW LOOP
+        # =========================
         for row, patient in enumerate(data):
 
             met_date = patient["met_start"]
@@ -2720,8 +2732,9 @@ class MainWindow(QMainWindow):
             # =========================
             # COLOR LOGIC
             # =========================
-            color = QColor(255, 200, 200)  # rouge par défaut
+            color = QColor(255, 200, 200)
             tooltip = ""
+
             if not met_date:
                 color = QColor(220, 220, 220)
                 tooltip = "Aucune date définie"
@@ -2735,10 +2748,8 @@ class MainWindow(QMainWindow):
                 tooltip = f"⏳ Urgent : {(met_date - self.now).days} jour(s) restant(s)"
 
             else:
-                color = QColor(200, 255, 200)
                 tooltip = f"OK : {(met_date - self.now).days} jour(s) restants"
 
-           
             # =========================
             # STATUS DOT
             # =========================
@@ -2751,8 +2762,7 @@ class MainWindow(QMainWindow):
             else:
                 dot = "🟢"
 
-
-           # =========================
+            # =========================
             # ICONS
             # =========================
             folder_ok = patient.get("existing_folder", False)
@@ -2760,36 +2770,35 @@ class MainWindow(QMainWindow):
             cq_patient_ok = patient.get("Timeplanner", False)
             pdf_ok = patient.get("existing_pdf", False)
 
-
             folder_icon = "✅" if folder_ok else "❌"
             dicom_icon = "✅" if dicom_ok else "❌"
             cq_patient_icon = "✅" if cq_patient_ok else "❌"
             pdf_icon = "✅" if pdf_ok else "❌"
 
             # =========================
-            # ADRESS DISPLAY
+            # ADDRESS
             # =========================
             folder_path = str(patient.get("folder_path") or "")
-
             adress = ""
 
             if "Hyperarc" in folder_path:
                 adress = "Hyperarc"
-
             elif "EC_IUC" in folder_path:
                 adress = "EC"
-
             elif "Patients_RA" in folder_path:
                 adress = "RA"
 
             # =========================
-            # CREATE ITEMS
+            # TOMO DATA (NEW)
+            # =========================
+            tomo_beam_on = patient.get("tomo_duration_min")
+            tomo_fraction = patient.get("tomo_fraction")
+
+            # =========================
+            # ITEMS
             # =========================
             item0 = QTableWidgetItem(dot)
             item_select_widget = create_centered_checkbox(True)
-            item_select_widget.checkbox.stateChanged.connect(
-                lambda _: self.refresh_current_tab_footer()
-            )
             item1 = QTableWidgetItem(str(met_date))
             item2 = QTableWidgetItem(f'{patient["last_name"]} {patient["first_name"]}')
             item3 = QTableWidgetItem(str(patient["ipp"]))
@@ -2799,56 +2808,60 @@ class MainWindow(QMainWindow):
             item7 = QTableWidgetItem(str(patient.get("task_note") or ""))
             item_cq_patient = QTableWidgetItem(cq_patient_icon)
 
-            # nouvelles colonnes
             item8 = QTableWidgetItem(folder_icon)
             item9 = QTableWidgetItem(dicom_icon)
             item_pdf = QTableWidgetItem(pdf_icon)
-            pdf_date = patient.get("pdf_date")
 
+            pdf_date = patient.get("pdf_date")
             if pdf_date:
                 item_pdf.setToolTip(
                     f"PDF validé : {pdf_date.strftime('%d/%m/%Y %H:%M')}"
                 )
+
             item10 = QTableWidgetItem(adress)
             item_energy = QTableWidgetItem(str(patient.get("energy") or ""))
-            
+
             # =========================
-            # CENTER ICONS
+            # NEW TOMO ITEMS
+            # =========================
+            item_beam_on = QTableWidgetItem(
+                "" if tomo_beam_on is None else str(tomo_beam_on)
+            )
+
+            item_fraction = QTableWidgetItem(
+                "" if tomo_fraction is None else str(tomo_fraction)
+            )
+
+            item_beam_on.setTextAlignment(Qt.AlignCenter)
+            item_fraction.setTextAlignment(Qt.AlignCenter)
+
+            # =========================
+            # ALIGNMENT
             # =========================
             item7.setTextAlignment(Qt.AlignCenter)
             item8.setTextAlignment(Qt.AlignCenter)
             item9.setTextAlignment(Qt.AlignCenter)
-            item_cq_patient.setTextAlignment(Qt.AlignCenter)
             item_pdf.setTextAlignment(Qt.AlignCenter)
             item_energy.setTextAlignment(Qt.AlignCenter)
 
             # =========================
-            # TOOLTIP + COLOR (sur toute la ligne)
+            # COLOR APPLY
             # =========================
             items = [
-    item0,
-    item1,
-    item2,
-    item3,
-    item4,
-    item5,
-    item_physicist,
-    item7,
-    item_cq_patient,
-    item8,
-    item9,
-    item_pdf,
-    item10,
-    item_energy
-]
+                item0, item1, item2, item3, item4,
+                item5, item_physicist, item7,
+                item_cq_patient, item8, item9,
+                item_pdf, item10, item_energy,
+                item_beam_on, item_fraction
+            ]
+
             for i in items:
                 i.setBackground(QBrush(color))
-
                 if i is not item_pdf:
                     i.setToolTip(tooltip)
 
             # =========================
-            # INSERT INTO TABLE
+            # INSERT TABLE
             # =========================
             table.setItem(row, 0, item0)
             table.setCellWidget(row, 1, item_select_widget)
@@ -2866,6 +2879,10 @@ class MainWindow(QMainWindow):
             table.setItem(row, 13, item10)
             table.setItem(row, 14, item_energy)
 
+            # NEW COLUMNS
+            table.setItem(row, 15, item_beam_on)
+            table.setItem(row, 16, item_fraction)
+
         table.resizeColumnsToContents()
 
         self.tabs.currentChanged.connect(self.on_tab_changed)
@@ -2873,6 +2890,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(table)
         layout.addWidget(footer_label)
         layout.addWidget(patient_widget)
+
         widget.setLayout(layout)
 
         widget.footer_label = footer_label
@@ -2880,7 +2898,6 @@ class MainWindow(QMainWindow):
         widget.table = table
 
         return widget
-
 # =====================================================
 # LANCEMENT APPLICATION
 # =====================================================
