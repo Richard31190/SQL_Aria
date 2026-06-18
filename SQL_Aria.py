@@ -854,10 +854,41 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
         for i, t in enumerate(tokens):
 
             # =========================
-            # FRACTION (QA)
+            # FRACTION
             # =========================
             if "_QA" in t:
-                fraction = t
+
+                parts = []
+
+                j = i
+
+                while j > 0 and tokens[j - 1] != "0":
+
+                    current = tokens[j]
+
+                    current = (
+                        current.replace("_QA", "")
+                               .replace("_OK", "")
+                               .strip()
+                    )
+
+                    parts.insert(0, current)
+
+                    j -= 1
+
+                # ajouter le premier élément après le 0
+                if j > 0:
+                    first = (
+                        tokens[j - 0]
+                        .replace("_QA", "")
+                        .replace("_OK", "")
+                        .strip()
+                    )
+
+                    if first:
+                        parts.insert(0, first)
+
+                fraction = " ".join(parts)
 
             # =========================
             # PLAN (heuristique)
