@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QVBoxLayout
 )
+
 from PySide6.QtGui import QColor, QBrush
 from PySide6.QtCore import QTimer
 from PySide6.QtCore import Qt
@@ -1173,7 +1174,6 @@ def load_daily_qa(session):
     
     return qa_rows
 
-
 def filter_today_qa(QA):
     # =========================================================
     # FILTER QA FOR TODAY + CURRENT + FUTURE
@@ -1831,13 +1831,6 @@ def load_data():
     machines, compte_down, remaining_today = load_today_patients_by_machine(session)
 
     return Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE, machines, compte_down, remaining_today
-
-from PySide6.QtWidgets import (
-    QWidget,
-    QPushButton,
-    QLabel,
-    QVBoxLayout
-)
 
 class CollapsibleWidget(QWidget):
 
@@ -2866,7 +2859,6 @@ class MainWindow(QMainWindow):
             # =========================
             item0 = QTableWidgetItem(dot)
             item_select_widget = create_centered_checkbox(True)
-
             item_select_widget.checkbox.stateChanged.connect(
                 self.refresh_current_tab_footer
             )
