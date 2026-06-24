@@ -2755,7 +2755,7 @@ class MainWindow(QMainWindow):
             "Adress",
             "Energy",
             "Duration (min)",   # NEW
-            "Fraction"         # NEW
+            "Localisation"         # NEW
         ])
 
         header_tooltips = [
