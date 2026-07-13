@@ -914,7 +914,9 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
 
     def read_tomo_scandidos_file(folder_path):
 
-        
+        if not folder_path:
+            print("⚠️ Aucun dossier fourni à read_tomo_scandidos_file")
+            return None, None, None
 
         for root, dirs, files in os.walk(folder_path):
 
@@ -2464,7 +2466,8 @@ class MainWindow(QMainWindow):
             self.db_error_shown = False
 
         except Exception as e:
-
+            import traceback
+            traceback.print_exc()
             if not self.db_error_shown:
 
                 QMessageBox.critical(
