@@ -46,9 +46,98 @@ from PySide6.QtWidgets import (
     QVBoxLayout
 )
 
-from PySide6.QtGui import QColor, QBrush
+from PySide6.QtGui import QColor, QBrush, QFont
 from PySide6.QtCore import QTimer
 from PySide6.QtCore import Qt
+
+# =========================================================
+# PALETTE PASTEL — raccordée aux pastilles d'urgence (⚪ 🔴 🟠 🟢)
+# =========================================================
+PASTEL_NONE = QColor(232, 232, 236)     # ⚪ pas de date
+PASTEL_LATE = QColor(255, 209, 209)     # 🔴 en retard
+PASTEL_URGENT = QColor(255, 226, 183)   # 🟠 urgent
+PASTEL_OK = QColor(210, 240, 214)       # 🟢 ok
+
+# =========================================================
+# FEUILLE DE STYLE GLOBALE — look moderne, clair, aéré
+# =========================================================
+APP_STYLESHEET = """
+    QMainWindow {
+        background-color: #F5F6F8;
+    }
+
+    QWidget {
+        font-family: 'Segoe UI', 'Inter', sans-serif;
+        font-size: 13px;
+        color: #2B2D33;
+    }
+
+    QTabWidget::pane {
+        border: 1px solid #E1E3E8;
+        border-radius: 10px;
+        background: #FFFFFF;
+        top: -1px;
+    }
+
+    QTabBar::tab {
+        background: #EDEEF2;
+        color: #5A5D66;
+        padding: 8px 18px;
+        margin-right: 4px;
+        border-top-left-radius: 8px;
+        border-top-right-radius: 8px;
+        font-weight: 600;
+    }
+
+    QTabBar::tab:selected {
+        background: #FFFFFF;
+        color: #2B2D33;
+        border: 1px solid #E1E3E8;
+        border-bottom: none;
+    }
+
+    QTabBar::tab:hover {
+        background: #E4E6EC;
+    }
+
+    QTableWidget {
+        background-color: #FFFFFF;
+        gridline-color: #EDEEF2;
+        border: none;
+        selection-background-color: #D9E8FB;
+        selection-color: #1A1C20;
+        alternate-background-color: #FAFBFC;
+    }
+
+    QHeaderView::section {
+        background-color: #F0F2F5;
+        color: #4A4D55;
+        padding: 8px;
+        border: none;
+        border-bottom: 2px solid #E1E3E8;
+        font-weight: 600;
+    }
+
+    QTableWidget::item {
+        padding: 4px;
+        border-bottom: 1px solid #F0F1F4;
+    }
+
+    QPushButton {
+        border-radius: 6px;
+        padding: 6px 12px;
+    }
+
+    QStatusBar {
+        background-color: #FFFFFF;
+        border-top: 1px solid #E1E3E8;
+    }
+
+    QCheckBox::indicator {
+        width: 15px;
+        height: 15px;
+    }
+"""
 
 from pathlib import Path
 from PySide6.QtWidgets import QWidget, QCheckBox, QHBoxLayout
@@ -1848,15 +1937,16 @@ class CollapsibleWidget(QWidget):
         self.toggle_button.setStyleSheet("""
             QPushButton {
                 text-align: left;
-                padding: 8px;
-                font-weight: bold;
-                background-color: #eaf7ea;
-                border: 1px solid #bcdcbc;
-                border-radius: 6px;
+                padding: 9px 12px;
+                font-weight: 600;
+                background-color: #EEF3EE;
+                color: #355E3B;
+                border: 1px solid #CFE3CF;
+                border-radius: 8px;
             }
 
             QPushButton:hover {
-                background-color: #dff0df;
+                background-color: #E3EEE3;
             }
         """)
 
@@ -1865,11 +1955,13 @@ class CollapsibleWidget(QWidget):
 
         self.content.setStyleSheet("""
             QLabel {
-                padding: 8px;
-                background-color: white;
-                border-left: 1px solid #bcdcbc;
-                border-right: 1px solid #bcdcbc;
-                border-bottom: 1px solid #bcdcbc;
+                padding: 10px;
+                background-color: #FFFFFF;
+                border-left: 1px solid #CFE3CF;
+                border-right: 1px solid #CFE3CF;
+                border-bottom: 1px solid #CFE3CF;
+                border-bottom-left-radius: 8px;
+                border-bottom-right-radius: 8px;
             }
         """)
 
@@ -2627,6 +2719,8 @@ class MainWindow(QMainWindow):
         # =========================
         root = QWidget()
         root_layout = QVBoxLayout()
+        root_layout.setContentsMargins(12, 12, 12, 8)
+        root_layout.setSpacing(8)
 
         # =========================
         # QA LABEL
@@ -2634,11 +2728,13 @@ class MainWindow(QMainWindow):
         self.qa_label = QLabel()
         self.qa_label.setStyleSheet("""
             QLabel {
-                background-color: #FFF3CD;
-                border: 1px solid #FFCC00;
-                padding: 8px;
+                background-color: #FFF6DE;
+                border: 1px solid #F5D98B;
+                border-radius: 8px;
+                padding: 10px 14px;
                 font-size: 14px;
-                font-weight: bold;
+                font-weight: 600;
+                color: #6B5215;
             }
         """)
         root_layout.addWidget(self.qa_label)
@@ -2649,11 +2745,13 @@ class MainWindow(QMainWindow):
         self.machine_label = QLabel()
         self.machine_label.setStyleSheet("""
             QLabel {
-                background-color: #E8F0FE;
-                border: 1px solid #4A90E2;
-                padding: 8px;
+                background-color: #E9F1FF;
+                border: 1px solid #AECBF5;
+                border-radius: 8px;
+                padding: 10px 14px;
                 font-size: 14px;
-                font-weight: bold;
+                font-weight: 600;
+                color: #204E8C;
             }
         """)
 
@@ -2662,9 +2760,9 @@ class MainWindow(QMainWindow):
         self.qa_legend = QLabel("* : patients restants")
         self.qa_legend.setStyleSheet("""
             QLabel {
-                color: gray;
+                color: #9497A0;
                 font-size: 11px;
-                padding-left: 5px;
+                padding: 2px 4px;
             }
         """)
 
@@ -2725,14 +2823,21 @@ class MainWindow(QMainWindow):
         # NEW COLUMN COUNT (15 + 2 = 17)
         # =========================
         table.setColumnCount(17)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(28)
+        table.setShowGrid(False)
 
         footer_label = QLabel("Temps estimé suivant sélection :")
         footer_label.setStyleSheet("""
             QLabel {
-                background-color: #f0f0f0;
-                padding: 6px;
-                font-weight: bold;
-                border-top: 1px solid #ccc;
+                background-color: #F3F4F7;
+                color: #3D3F46;
+                padding: 8px 10px;
+                font-weight: 600;
+                border-top: 1px solid #E1E3E8;
+                border-bottom-left-radius: 8px;
+                border-bottom-right-radius: 8px;
             }
         """)
 
@@ -2795,22 +2900,23 @@ class MainWindow(QMainWindow):
             # =========================
             # COLOR LOGIC
             # =========================
-            color = QColor(255, 200, 200)
+            color = PASTEL_OK
             tooltip = ""
 
             if not met_date:
-                color = QColor(220, 220, 220)
+                color = PASTEL_NONE
                 tooltip = "Aucune date définie"
 
             elif met_date < self.now:
-                color = QColor(255, 150, 150)
+                color = PASTEL_LATE
                 tooltip = f"⚠️ En retard de {(self.now - met_date).days} jour(s)"
 
             elif met_date <= self.limit:
-                color = QColor(255, 220, 150)
+                color = PASTEL_URGENT
                 tooltip = f"⏳ Urgent : {(met_date - self.now).days} jour(s) restant(s)"
 
             else:
+                color = PASTEL_OK
                 tooltip = f"OK : {(met_date - self.now).days} jour(s) restants"
 
             # =========================
@@ -2968,6 +3074,8 @@ class MainWindow(QMainWindow):
 # LANCEMENT APPLICATION
 # =====================================================
 app = QApplication(sys.argv)
+app.setStyleSheet(APP_STYLESHEET)
+app.setFont(QFont("Segoe UI", 10))
 
 window = MainWindow()
 window.show()
