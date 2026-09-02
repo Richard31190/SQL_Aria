@@ -1,12 +1,21 @@
 ﻿# =========================================================
 # Richard BOISSERON
 # Dashboard de suivi des CQ
-# Ce script se connecte à la base de données, extrait les tâches de réalisation des CQ prêtes et les appointments MET associés, 
-# puis affiche le tout dans une interface Qt avec un code couleur selon la proximité de l'appointment MET.
+# Ce script se connecte à la base de données, extrait les tâches de réalisation des CQ prêtes
+# et les appointments MET associés, puis affiche le tout dans une interface Qt avec un code
+# couleur selon la proximité de l'appointment MET.
 # Les données sont rafraîchies automatiquement toutes les 3 minutes pour rester à jour.
 # La recherche des CQ Physique ou patient est effectuée 14 jours avant la MET et après la MET
-# Note
-# pour faire le .exe : 
+#
+# v2 — CORRECTIONS ANTI-FREEZE :
+#   - Chargement SQL + réseau déporté dans un QThread (l'UI ne gèle plus)
+#   - Le worker est créé UNE SEULE FOIS et relancé à chaque cycle (plus de deleteLater)
+#   - Signal currentChanged connecté une seule fois (plus de warning de disconnect)
+#   - Destruction réelle des anciens onglets (plus de fuite mémoire)
+#   - Fenêtre glissante de 14 jours recalculée à chaque refresh
+#   - Fermeture propre de l'application (closeEvent)
+#
+# Note pour faire le .exe :
 """
 Remove-Item dist -Recurse -Force
 Remove-Item build -Recurse -Force
@@ -16,22 +25,30 @@ python -m PyInstaller SQL_Aria.py --clean --noconfirm --onedir --windowed --name
 """
 # =========================================================
 
-
-
 import os
 import re
+import sys
 import traceback
-import pandas as pd
+from datetime import datetime, timedelta
+from collections import defaultdict
 
-from models import Patients, Careplans, Tasks, Appointments, Prescriptions, Plans, Events, QueryLog,Comments, CommentAssociations
 from dotenv import load_dotenv
 
-from datetime import datetime, timedelta
-
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, or_, func
 from sqlalchemy.orm import sessionmaker, joinedload
-from sqlalchemy import or_
-from sqlalchemy import func
+
+from models import (
+    Patients,
+    Careplans,
+    Tasks,
+    Appointments,
+    Prescriptions,
+    Plans,
+    Events,
+    QueryLog,
+    Comments,
+    CommentAssociations,
+)
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -43,12 +60,17 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QStatusBar,
-    QVBoxLayout
+    QVBoxLayout,
+    QHBoxLayout,
+    QCheckBox,
+    QMessageBox,
 )
 
 from PySide6.QtGui import QColor, QBrush, QFont
-from PySide6.QtCore import QTimer
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt, QThread, Signal
+
+import pydicom
+
 
 # =========================================================
 # PALETTE PASTEL — raccordée aux pastilles d'urgence (⚪ 🔴 🟠 🟢)
@@ -139,26 +161,16 @@ APP_STYLESHEET = """
     }
 """
 
-from pathlib import Path
-from PySide6.QtWidgets import QWidget, QCheckBox, QHBoxLayout
-from PySide6.QtCore import Qt
-
-from PySide6.QtWidgets import QMessageBox
-import sys
-import pydicom
 
 # =========================================================
-# Configuration for SQL databa access
+# Configuration for SQL database access
 # =========================================================
 
 # Loading user information for database access
-base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 
 dotenv_path = os.path.join(base_path, "ATT70966.env")
 load_dotenv(dotenv_path)
-
-# Time range used for the search
-two_weeks_ago = datetime.now() - timedelta(days=14)
 
 # Read environment variables
 db_user = os.getenv("DATABASE_USER")
@@ -176,186 +188,15 @@ DATABASE_URL = (
 )
 
 # Create SQLAlchemy engine
-engine = create_engine(DATABASE_URL)
+# pool_pre_ping : évite les erreurs "MySQL server has gone away" sur une appli
+# qui tourne toute la journée avec des connexions inactives entre 2 refresh.
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=1800)
 SessionLocal = sessionmaker(bind=engine)
 
-#region Extraction de données complète (debug) - ID patient à adapter selon besoin
-"""
-# =========================
-# FULL DUMP FUNCTION (if needed, in order to see all available patient data)
-# =========================
-def dump_patient_full(session, ipp: str):
-
-    patient = (
-        session.query(Patients)
-        .options(
-            joinedload(Patients.appointments),
-            joinedload(Patients.careplans).joinedload(Careplans.tasks),
-            joinedload(Patients.prescriptions).joinedload(Prescriptions.plans),
-            joinedload(Patients.plans),
-            joinedload(Patients.events),
-        )
-        .filter(Patients.ipp == ipp)
-        .first()
-    )
-
-    if not patient:
-        print(f"No patient found for IPP {ipp}")
-        return
-
-    # =========================
-    # PATIENT
-    # =========================
-    print("\n================ PATIENT ================")
-    print("ID:", patient.id)
-    print("family name official:", patient.family_name_official)
-    print("Given:", patient.given)
-    print("Birth date:", patient.birth_date)
-    print("family name mainden:", patient.family_name_maiden)
-    print("Gender:", patient.gender)
-    print("IPP:", patient.ipp)
-    print("Telecom:", patient.telecom)
-    print("Adress:", patient.address)
-    print("Created at:", patient.created_at)
-    print("Last updated:", patient.last_updated)
-
-    # =========================
-    # APPOINTMENTS
-    # =========================
-    print("\n================ APPOINTMENTS ================")
-    for a in patient.appointments:
-        print("ID:", a.id)
-        print("Status:", a.status)
-        print("Code:", a.code)
-        print("Service type:", a.service_type)
-        print("Service category:", a.service_category)
-        print("Is active:", a.is_active)
-        print("Start:", a.start_scheduled_period)
-        print("End:", a.end_scheduled_period)
-        print("Instance:", a.instance)
-        print("User note:", a.user_note)
-        print("Minutes duration:", a.minutes_duration)
-        print("Comment:", a.comment)
-        print("Device:", a.device)
-        print("Physician id:", a.physician_id)
-        print("Physician:", a.physician)
-        print("Patient id:", a.patient_id)
-        print("Created at:", a.created_at)
-        print("last updated:", a.last_updated)
-        print("---")
-
-    # =========================
-    # CAREPLANS + TASKS
-    # =========================
-    print("\n================ CAREPLANS / TASKS ================")
-    for cp in patient.careplans:
-        print("\nCAREPLAN:", cp.id, "-", cp.title)
-
-        for t in cp.tasks:
-            print("  Task ID:", t.id)
-            print("  Display focus:", t.display_focus)
-            print("  Status:", t.status)
-            print("  Code:", t.code)
-            print("  Minutes duration:", t.minutes_duration)
-            print("  Activity definition id:", t.activitydefinition_id)
-            print("  Based On:", t.basedOn)
-            print("  Restriction period end:", t.restriction_period_end)
-            print("  ExecutionPeriod:", t.executionPeriod)
-            print("  LastModified:", t.lastModified)
-            print("  Authored On:", t.authoredOn)
-            print("  Category:", t.category)
-            print("  Note:", t.note)
-            print("  Recipient:", t.recipient)
-            print("  Recipient ID:", t.recipient_id)
-            print("  Careplan id:", t.careplan_id)
-            print("  Created at:", t.created_at)
-            print("  Last updated:", t.last_updated)
-            print("  Device:", t.device)
-            print("  CAREPLAN id:", cp.id)
-            print("  CAREPLAN Title:", cp.title)
-            print("  CAREPLAN Note:", cp.note)
-            print("  CAREPLAN Patient id:", cp.patient_id)
-            print("  CAREPLAN Created at:", cp.created_at)
-            print("  CAREPLAN Last_updated:", cp.last_updated)
-            print("  ---")
-
-            # =========================
-            # COMMENTS FOR THIS TASK
-            # =========================
-            comments = (
-                session.query(Comments)
-                .join(CommentAssociations, Comments.id == CommentAssociations.comment_id)
-                .filter(
-                    CommentAssociations.table_name == "tasks",
-                    CommentAssociations.entity_id == t.id
-                )
-                .all()
-            )
-
-        for c in comments:
-            print("    COMMENT:", c.content)
-    # =========================
-    # PRESCRIPTIONS + PLANS
-    # =========================
-    print("\n================ PRESCRIPTIONS ================")
-    for p in patient.prescriptions:
-        print("Prescription ID:", p.id)
-        print("Status:", p.status)
-        print("Technique:", p.technique)
-        print("Site:", p.site)
-        print("Created:", p.created_at)
-        print("Last updated:", p.last_updated)
-
-        for pl in p.plans:
-            print("  Plan ID:", pl.id)
-            print("  Name:", pl.name)
-            print("  Technique:", pl.treatment_technique)
-            print("  Last updated:", pl.last_updated)
-
-    # =========================
-    # PLANS (direct patient link)
-    # =========================
-    print("\n================ PATIENT PLANS ================")
-    for pl in patient.plans:
-        print("Plan ID:", pl.id)
-        print("Name:", pl.name)
-        print("Technique:", pl.treatment_technique)
-        print("Last updated:", pl.last_updated)
-
-    # =========================
-    # EVENTS
-    # =========================
-    print("\n================ EVENTS ================")
-    for e in patient.events:
-        print("Event ID:", e.id)
-        print("Type:", e.event_type)
-        print("Timestamp:", e.timestamp)
-        print("Description:", e.description)
-        print("Last updated:", e.last_updated)
-
-    # =========================
-    # QUERY LOG
-    # =========================
-    print("\n================ QUERY LOG ================")
-    log = session.query(QueryLog).first()
-
-    if log:
-        print("Id:", log.id)
-        print("Last task request:", log.last_task_request)
-        print("Last appointment request:", log.last_appointment_request)
-        print("Created at:", log.created_at)
-        print("Last updated:", log.last_updated)
-
 
 # =========================================================
-# EXECUTION (Don't forget to add a stop point.)
+# FONCTIONS METIER / EXTRACTION
 # =========================================================
-# Get all data patient (DEBUG CALL)
-session = SessionLocal()
-dump_patient_full(session, "201600480")
-session.close()
-"""
-#endregion
 
 def load_today_patients_by_machine(session):
     remaining_today = {}
@@ -427,6 +268,7 @@ def load_today_patients_by_machine(session):
         # =========================
         service_type = str(appt.service_type or "").lower()
         last_name = str(appt.patient.family_name_official or "").lower()
+
         # =========================
         # GARDER CQ HEBDOMADAIRE
         # =========================
@@ -515,26 +357,23 @@ def load_today_patients_by_machine(session):
             compte_down[machine] = "none"
         else:
             compte_down[machine] = countdown
-    
 
     # =========================
     # CALCUL DU NOMBRE DE PATIENTS RESTANT AVANT LA FIN DE LA JOURNEE
     # =========================
-
     for machine, patients in machines.items():
 
         count = 0
 
         for p in patients:
+
             if p.get("id") == 4:
                 continue
 
             service_type = str(p.get("service_type") or "").lower()
+
             if (
-                #"cq" in service_type
                 "consultation" in service_type
-                #or "cq patient" in service_type
-                #or "cq physique" in service_type
                 or "interne" in service_type
                 or "sang" in service_type
             ):
@@ -545,58 +384,17 @@ def load_today_patients_by_machine(session):
             if status in ["cancelled", "fulfilled"]:
                 continue
 
-            if p["start"] >= now:
+            if p["start"] and p["start"] >= now:
                 count += 1
 
         remaining_today[machine] = count
 
     return machines, compte_down, remaining_today
 
-def check_qa_overlap(qa_row, machines):
-
-    machine = qa_row.get("machine")
-    met_start = qa_row.get("met_start")
-    met_end = qa_row.get("met_end")
-
-    if not machine or not met_start or not met_end:
-        return 0
-
-    overlap_minutes = 0
-
-    for task in machines.get(machine, []):
-
-        task_start = task.get("start")
-        task_end = task.get("end")
-
-        if not task_start or not task_end:
-            continue
-
-        # =========================
-        # EXCLUSION DE LA TACHE CQ
-        # =========================
-        if (
-            abs((task_start - met_start).total_seconds()) < 60
-            and
-            abs((task_end - met_end).total_seconds()) < 60
-        ):
-            continue
-
-        # =========================
-        # CHEVAUCHEMENT
-        # =========================
-        overlap_start = max(task_start, met_start)
-        overlap_end = min(task_end, met_end)
-
-        if overlap_start < overlap_end:
-            overlap_minutes += (
-                overlap_end - overlap_start
-            ).total_seconds() / 60
-
-    return round(overlap_minutes)
 
 def create_centered_checkbox(checked=True):
     # =========================================================
-    # Affiche la case à cocher de la colonne 'Select' au milieu de la cellule du tableau
+    # Affiche la case à cocher de la colonne 'Select' au milieu de la cellule
     # =========================================================
     widget = QWidget()
     layout = QHBoxLayout(widget)
@@ -611,11 +409,11 @@ def create_centered_checkbox(checked=True):
 
     return widget
 
+
 def print_query_log(session):
     # =========================================================
     # Affiche les dernières requêtes ARIA ayant alimenté la DB
     # =========================================================
-
     log = (
         session.query(QueryLog)
         .order_by(QueryLog.id.desc())
@@ -634,29 +432,32 @@ def print_query_log(session):
     print("last_updated :", log.last_updated)
     print("==========================================\n")
 
+
 def get_last_database_update(session):
     # =========================================================
-    # Récupère la date et l'heure de la dernière actualisation (partielle ou complète) de la base de données (pour info dans le dashboard))
+    # Récupère la date/heure de la dernière actualisation de la base de données
     # =========================================================
     return session.query(
         func.max(Tasks.last_updated)
     ).scalar()
 
+
 def sort_by_met_start(table):
     # =========================================================
-    # Fonction pour ordonner les patients par date de MET
+    # Ordonne les patients par date de MET
     # =========================================================
     return sorted(
         table,
         key=lambda row: (
             row["met_start"] is None,
-            row["met_start"]
+            row["met_start"] or datetime.max
         )
     )
 
+
 def add_business_days(start_date, days):
     # =========================================================
-    # Fonction pour exclure les week-ends dans le calcul des MET prioritaires
+    # Exclut les week-ends dans le calcul des MET prioritaires
     # =========================================================
     current = start_date
     added = 0
@@ -670,21 +471,23 @@ def add_business_days(start_date, days):
 
     return current
 
+
 def clean_cq_rows(rows):
     # =========================================================
-    # Nettoie les données brutes extraites de la base de données pour ne garder que les tâches pertinentes (filtrage des tâches annulées, etc.)
+    # Nettoie les données brutes (filtrage des tâches non pertinentes)
     # =========================================================
     return [
         r for r in rows
         if str(r.get("task_status") or "").lower() not in ["completed", "draft"]
     ]
 
+
 def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
     # =========================================================
-    # Recherche dans les dossiers réseaux IUCT l'existence de dossiers patients correspondant aux patients du jour, et vérifie la présence de fichiers DICOM (calculs) dans ces dossiers
+    # Recherche dans les dossiers réseaux IUCT l'existence de dossiers patients
+    # et vérifie la présence de fichiers DICOM / PDF.
+    # ⚠️ Fonction lourde (accès réseau) : exécutée dans le thread de travail.
     # =========================================================
-    import os
-    from datetime import datetime
 
     # =========================
     # NETWORK PATHS TOMO
@@ -705,7 +508,7 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
     current_year = str(datetime.now().year)
 
     # =========================
-    # TOMO  (LEVEL 1 ONLY) - N'inspecte pas les sous dossiers
+    # TOMO (LEVEL 1 ONLY) - N'inspecte pas les sous dossiers
     # =========================
     def build_cache(path):
         cache = {}
@@ -724,7 +527,7 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
         return cache
 
     # =========================
-    # NOVA - Inspecte les sous dossiers
+    # NOVA - Inspecte le sous dossier de l'année
     # =========================
     def build_cache_nova(path):
         cache = {}
@@ -810,7 +613,6 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
             if not dcm_date:
                 return False, False, None, None
 
-
             # =========================
             # PASS 2 : RP ENERGY
             # =========================
@@ -829,8 +631,6 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
                         ):
 
                             try:
-                                import pydicom
-
                                 ds = pydicom.dcmread(
                                     os.path.join(root, file),
                                     stop_before_pixels=True
@@ -901,7 +701,7 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
             return False, False, None, None
 
     # =========================
-    # PROCESS TOMO
+    # PROCESS TOMO — lecture fichier ScandiDos
     # =========================
     def extract_tokens(raw_bytes):
 
@@ -993,7 +793,7 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
             if t == "VERIFICATION":
 
                 # recherche durée après PATIENT block
-                for j in range(i, min(i+20, len(tokens))):
+                for j in range(i, min(i + 20, len(tokens))):
 
                     if re.match(r"\d+\.\d{4,}", tokens[j]):
                         duration = float(tokens[j])
@@ -1004,25 +804,28 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
     def read_tomo_scandidos_file(folder_path):
 
         if not folder_path:
-            print("⚠️ Aucun dossier fourni à read_tomo_scandidos_file")
             return None, None, None
 
-        for root, dirs, files in os.walk(folder_path):
+        try:
+            for root, dirs, files in os.walk(folder_path):
 
-            for file in files:
+                for file in files:
 
-                if is_tomo_scandidos_file(file):
+                    if is_tomo_scandidos_file(file):
 
-                    full_path = os.path.join(root, file)
+                        full_path = os.path.join(root, file)
 
-                    with open(full_path, "rb") as f:
-                        raw = f.read()
+                        with open(full_path, "rb") as f:
+                            raw = f.read()
 
-                    tokens = extract_tokens(raw)
+                        tokens = extract_tokens(raw)
 
-                    plan, fraction, duration = parse_tomo_scandi_tokens(tokens)
+                        plan, fraction, duration = parse_tomo_scandi_tokens(tokens)
 
-                    return plan, fraction, duration
+                        return plan, fraction, duration
+
+        except Exception as e:
+            print(f"[SCANDIDOS READ ERROR] {folder_path} -> {e}")
 
         return None, None, None
 
@@ -1040,7 +843,6 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
             dicom_ok, pdf_ok, pdf_date, energy = check_dicom_and_pdf(folder_path)
             plan, fraction, duration = read_tomo_scandidos_file(folder_path)
 
-            #row["tomo_plan"] = plan
             row["tomo_fraction"] = fraction
             row["tomo_duration_min"] = duration
             row["tomo_duration_sec"] = duration * 60 if duration else None
@@ -1101,8 +903,8 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
                     machine = "RA"
 
             row["existing_folder"] = folder_name is not None
-            dicom_ok, pdf_ok, pdf_date, energy = check_dicom_and_pdf(folder_path, True)
 
+            dicom_ok, pdf_ok, pdf_date, energy = check_dicom_and_pdf(folder_path, True)
 
             row["existing_dicom"] = dicom_ok
             row["existing_pdf"] = pdf_ok
@@ -1131,19 +933,19 @@ def check_existing_folders(Nova, Tomo2, Tomo4, Tomo7):
     print("Explore folder Nova")
     process_nova(Nova)
 
+
 def load_machine_schedule(session):
     # =========================================================
-    # Recherche dans la Database des appointments de type 'Implant' programmés aujourd'hui sur les machines concernées (TOMO 2, TOMO 4, RADI 7, NOVA3, NOVA5, HALCYON6, HALCYON8), 
-    # pour afficher les horaires de fin d'activité de la journée dans le dashboard
+    # Appointments de type 'Implant' programmés aujourd'hui sur les machines
+    # concernées, pour afficher les horaires de fin d'activité de la journée.
     # =========================================================
-    # récupère la date du jour pour filtrer les appointments du jour
     today_start = datetime.now().replace(
         hour=0, minute=0, second=0, microsecond=0
     )
     today_end = today_start + timedelta(days=1)
 
-    # recherche les appointments du jour avec service_type 'Implant' sur les machines concernées
     rows = []
+
     opening_closing = (
         session.query(Appointments)
         .join(Patients)
@@ -1175,7 +977,6 @@ def load_machine_schedule(session):
             appt.device,
             appt.start_scheduled_period
         )
-        patient = appt.patient
 
         rows.append({
             "machine": appt.device,
@@ -1186,6 +987,7 @@ def load_machine_schedule(session):
         })
 
     return rows
+
 
 def load_daily_qa(session):
     # =========================================================
@@ -1206,7 +1008,9 @@ def load_daily_qa(session):
                 (
                     Appointments.service_type.ilike("%cq patient%")
                     &
-                    Appointments.device.in_(["TOMO 2", "Tomo4", "RADI 7", "0210462", "0210471"])
+                    Appointments.device.in_(
+                        ["TOMO 2", "Tomo4", "RADI 7", "0210462", "0210471"]
+                    )
                 )
             ),
             ~Appointments.device.ilike("HALCYON%")
@@ -1218,52 +1022,35 @@ def load_daily_qa(session):
 
     for appt in appointments:
 
-        patient = (
-            session.query(Patients)
-            .filter(Patients.id == appt.patient_id)
-            .first()
-        )
+        patient = appt.patient
+
+        if patient is None:
+            continue
 
         qa_rows.append({
 
             "machine": appt.device,
-
             "task_display_focus": appt.service_type,
-
             "task_status": appt.status,
-
             "task_note": appt.comment or "",
-
             "met_start": appt.start_scheduled_period,
-
             "met_end": appt.end_scheduled_period,
-
             "last_name": patient.family_name_official,
-
             "first_name": patient.given,
-
             "service_type": appt.service_type,
-
             "ipp": patient.ipp,
-
-            "patient_id": patient.id,
-
             "patient_id": appt.patient_id,
-
             "family_name_official": patient.family_name_official,
-
             "existing_folder": False,
-
             "existing_dicom": False,
-
             "existing_pdf": False,
-
             "folder_path": ""
         })
 
     print("QA ROWS:", len(qa_rows))
-    
+
     return qa_rows
+
 
 def filter_today_qa(QA):
     # =========================================================
@@ -1300,9 +1087,6 @@ def filter_today_qa(QA):
 
         # =========================
         # FILTER CQ TYPE
-        # Affiche seulement :
-        # - family_name_official contenant "CQ HEBDOMADAIRE"
-        # - OU patient_id == 3
         # =========================
         family_name = str(
             row.get("family_name_official") or ""
@@ -1323,9 +1107,7 @@ def filter_today_qa(QA):
             continue
 
         # =========================
-        # KEEP:
-        # - FUTURE SLOT
-        # - CURRENT SLOT
+        # KEEP: FUTURE SLOT / CURRENT SLOT
         # =========================
         is_future = met_start >= now
 
@@ -1347,10 +1129,16 @@ def filter_today_qa(QA):
 
     return filtered
 
+
 def load_data():
     # =========================================================
     # EXTRACT from database to array
+    # ⚠️ FONCTION LOURDE : exécutée uniquement dans le thread de travail.
     # =========================================================
+
+    # Fenêtre glissante recalculée à chaque refresh
+    two_weeks_ago = datetime.now() - timedelta(days=14)
+
     # Test database connection
     try:
         connection = engine.connect()
@@ -1361,568 +1149,563 @@ def load_data():
         print("DATABASE CONNECTION ERROR")
         print(e)
         raise
-    #connection = engine.connect()
-    #print("\nDatabase connection OK")
-    #connection.close()
 
     session = SessionLocal()
-    print_query_log(session)
-    rows = []
-    rows2=[]
-    # =========================================================
-    # RECHERCHE DE TOUS LES CQ PATIENT PROGRAMME DANS TIMEPLANNER (POUR AUJOURD'HUI) - ETAPE 1/2
-    # =========================================================
-    today_start = datetime.now().replace(
-        hour=0,
-        minute=0,
-        second=0,
-        microsecond=0
-    )
 
-    today_end = today_start + timedelta(days=1)
+    try:
+        print_query_log(session)
 
-    all_cq_patient_appts = (
-    session.query(Appointments)
-    .filter(
-        Appointments.start_scheduled_period >= today_start,
-        Appointments.start_scheduled_period < today_end,
-        Appointments.service_type.ilike("%cq patient%"),
-        ~func.lower(Appointments.status).in_([
-            "cancelled",
-            "fulfilled"
-        ])
-    )
-    .all()
-)
+        rows = []
+        rows2 = []
 
-    print("CQ patient appointments found:", len(all_cq_patient_appts))
-
-    # =========================================================
-    # Recherche dans la Database des patients ayant des tâches de 'réalisation des CQ prêtes' en attente depuis moins de 14 jours
-    # =========================================================
-    patients = (
-        session.query(Patients)
-        .join(Patients.careplans)
-        .join(Careplans.tasks)
-        .filter(
-            or_(
-                Tasks.display_focus.ilike("réalisation du cq%"),
-                Tasks.display_focus.ilike("réalisation des cq%"),
-                Tasks.display_focus.ilike("replanif%")
-            ),
-            Tasks.last_updated >= two_weeks_ago,
-            Tasks.status.ilike("ready")
+        # =========================================================
+        # TOUS LES CQ PATIENT PROGRAMMES DANS TIMEPLANNER (AUJOURD'HUI) — 1/2
+        # =========================================================
+        today_start = datetime.now().replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0
         )
-        .options(
-            joinedload(Patients.appointments),
-            joinedload(Patients.careplans).joinedload(Careplans.tasks)
-        )
-        .distinct()
-        .all()
-    )
 
-    print(f"\nNumber of patients fetched: {len(patients)}")
+        today_end = today_start + timedelta(days=1)
 
-    # =========================================================
-    # Recherche dans la Database des patients avec :
-    # - Validation Médicale de la dosimétrie = completed ou ready
-    # - Finalisation du dossier = draft
-    # Correspond aux patients dont le CQ est imminent
-    # =========================================================
-
-    rows2 = []
-
-    patients_validation = (
-        session.query(Patients)
-        .join(Patients.careplans)
-        .join(Careplans.tasks)
-        .filter(
-            Tasks.last_updated >= two_weeks_ago
-        )
-        .options(
-            joinedload(Patients.careplans)
-            .joinedload(Careplans.tasks)
-        )
-        .distinct()
-        .all()
-    )
-
-    print(
-        f"Patients potentiellement éligibles CQ imminent : "
-        f"{len(patients_validation)}"
-    )
-
-    added_patient_ids = set()
-
-    for patient in patients_validation:
-
-        # ==========================================
-        # Validation Médicale de la dosimétrie = completed ou ready ou in-progress
-        # ==========================================
-        validation_tasks = [
-            t
-            for cp in patient.careplans
-            for t in cp.tasks
-            if (
-                t.display_focus
-                and t.display_focus.lower().startswith(
-                    "validation médicale de la dosimétrie"
-                )
-                and str(t.status or "").lower() in [
-                    "completed",
-                    "in-progress",
-                    "ready"
-                ]
-                and t.last_updated
-                and t.last_updated >= two_weeks_ago
+        all_cq_patient_appts = (
+            session.query(Appointments)
+            .filter(
+                Appointments.start_scheduled_period >= today_start,
+                Appointments.start_scheduled_period < today_end,
+                Appointments.service_type.ilike("%cq patient%"),
+                ~func.lower(Appointments.status).in_([
+                    "cancelled",
+                    "fulfilled"
+                ])
             )
-        ]
-
-        if not validation_tasks:
-            continue
-
-        # validation la plus récente
-        latest_validation = max(
-            validation_tasks,
-            key=lambda x: x.last_updated
+            .all()
         )
 
-        validation_date = latest_validation.last_updated
+        print("CQ patient appointments found:", len(all_cq_patient_appts))
 
-        # ==========================================
-        # Finalisation du dossier = draft
-        # ==========================================
-        finalisation_tasks = [
-            t
-            for cp in patient.careplans
-            for t in cp.tasks
-            if (
-                t.display_focus
-                and t.display_focus.lower().startswith(
-                    "finalisation du dossier"
-                )
-                and str(t.status or "").lower() == "draft"
-                and t.last_updated
-                and t.last_updated >= two_weeks_ago
+        # =========================================================
+        # Patients ayant des tâches 'réalisation des CQ prêtes' (< 14 jours)
+        # =========================================================
+        patients = (
+            session.query(Patients)
+            .join(Patients.careplans)
+            .join(Careplans.tasks)
+            .filter(
+                or_(
+                    Tasks.display_focus.ilike("réalisation du cq%"),
+                    Tasks.display_focus.ilike("réalisation des cq%"),
+                    Tasks.display_focus.ilike("replanif%")
+                ),
+                Tasks.last_updated >= two_weeks_ago,
+                Tasks.status.ilike("ready")
             )
-        ]
-
-        if not finalisation_tasks:
-            continue
-
-        # ==========================================
-        # Réalisation du TDM
-        # ==========================================
-       
-        tdm_tasks = [
-            t
-            for cp in patient.careplans
-            for t in cp.tasks
-            if (
-                t.display_focus
-                and t.display_focus.lower().startswith("scanner de simulation")
-                and t.last_updated
+            .options(
+                joinedload(Patients.appointments),
+                joinedload(Patients.careplans).joinedload(Careplans.tasks)
             )
-        ]
-
-        latest_tdm = (
-            max(tdm_tasks, key=lambda x: x.last_updated)
-            if tdm_tasks
-            else None
+            .distinct()
+            .all()
         )
 
-        tdm_date = (
-            latest_tdm.last_updated
-            if latest_tdm
-            else None
+        print(f"\nNumber of patients fetched: {len(patients)}")
+
+        # =========================================================
+        # Patients avec :
+        # - Validation Médicale de la dosimétrie = completed / ready / in-progress
+        # - Finalisation du dossier = draft
+        # => CQ imminent
+        # =========================================================
+        patients_validation = (
+            session.query(Patients)
+            .join(Patients.careplans)
+            .join(Careplans.tasks)
+            .filter(
+                Tasks.last_updated >= two_weeks_ago
+            )
+            .options(
+                joinedload(Patients.appointments),
+                joinedload(Patients.careplans).joinedload(Careplans.tasks)
+            )
+            .distinct()
+            .all()
         )
 
-
-        # ==========================================
-        # Appeler patient (on récupère le status)
-        # ==========================================
-        
-        appel_patient_tasks = [
-            t
-            for cp in patient.careplans
-            for t in cp.tasks
-            if (
-                t.display_focus
-                and t.display_focus.lower().startswith("appeler patient")
-                and t.last_updated
-                and t.last_updated >= two_weeks_ago
-            )
-        ]
-
-        latest_appel = (
-            max(appel_patient_tasks, key=lambda x: x.last_updated)
-            if appel_patient_tasks
-            else None
+        print(
+            f"Patients potentiellement éligibles CQ imminent : "
+            f"{len(patients_validation)}"
         )
 
-        appel_patient_status = latest_appel.status if latest_appel else None
+        added_patient_ids = set()
 
-        # ==========================================
-        # MET (si existant on prend la plus récente après la validation médicale)
-        # ==========================================
-        met_appointments = [
-            appt
-            for appt in patient.appointments
-            if (
-                appt.service_type
-                and appt.service_type.upper().startswith("MET")
-                and appt.start_scheduled_period
-                and appt.start_scheduled_period > validation_date
-                and str(appt.status or "").lower() != "cancelled"
-            )
-        ]
+        for patient in patients_validation:
 
-        met_appt = None
-
-        if met_appointments:
-            met_appt = max(
-                met_appointments,
-                key=lambda x: x.start_scheduled_period
-            )
-
-        met_start = (
-            met_appt.start_scheduled_period
-            if met_appt else None
-        )
-
-        # ==========================================
-        # Réalisation dosi (récupération du nom exact)
-        # ==========================================
-        realisation_dosi_task_name = None
-
-        for cp in patient.careplans:
-            for t in cp.tasks:
+            # ==========================================
+            # Validation Médicale de la dosimétrie
+            # ==========================================
+            validation_tasks = [
+                t
+                for cp in patient.careplans
+                for t in cp.tasks
                 if (
                     t.display_focus
-                    and "réalisation dosi" in t.display_focus.lower()
+                    and t.display_focus.lower().startswith(
+                        "validation médicale de la dosimétrie"
+                    )
+                    and str(t.status or "").lower() in [
+                        "completed",
+                        "in-progress",
+                        "ready"
+                    ]
                     and t.last_updated
                     and t.last_updated >= two_weeks_ago
-                ):
-                    realisation_dosi_task_name = t.display_focus
-                    break
-            if realisation_dosi_task_name:
-                break
+                )
+            ]
 
-        # ==========================================
-        # Evite les doublons patients
-        # ==========================================
-        if patient.id in added_patient_ids:
-            continue
+            if not validation_tasks:
+                continue
 
-        added_patient_ids.add(patient.id)
-
-        # ==========================================
-        # Récupération device depuis Tasks
-        # ==========================================
-        devices = list({
-            t.device.name
-            for cp in patient.careplans
-            for t in cp.tasks
-            if getattr(t, "device", None)
-            and getattr(t.device, "name", None)
-        })
-
-        # ==========================================
-        # Patient susceptible de tomber prochainement (si validation_tasks = completed ou ready ou in-progress et date de MET existante)
-        # ==========================================
-        va_tomber = bool(validation_tasks and met_start)
-
-        # ==========================================
-        # Construction de rows2
-        # ==========================================
-        rows2.append({
-
-            "ipp": patient.ipp,
-            "last_name": patient.family_name_official,
-            "first_name": patient.given,
-            "patient_id": patient.id,
-            "tdm_date": tdm_date,
-            "realisation_dosi_task": realisation_dosi_task_name,
-            "Workflow": cp.title,
-            "appel_patient_status": appel_patient_status,
-            "validation_date": validation_date,
-            "met_start": met_start,
-            "va_tomber": va_tomber
-        })
-
-    print(f"Patients CQ imminent trouvés : {len(rows2)}")
-
-    # ==========================================
-    # Classement des patients en attente par machine d'attribution
-    # ==========================================
-    from collections import defaultdict
-
-    Patient_EnAttente_count = defaultdict(int)
-    Patient_EnAttente_details = {
-        "Tomo 2": [],
-        "Tomo 4": [],
-        "Tomo 7": [],
-        "Nova": []
-    }
-
-    for row in rows2:
-
-        task_name = row.get("Workflow")
-
-        if not task_name:
-            continue
-
-        task_name_lower = task_name.lower()
-
-        if "tomo 2" in task_name_lower:
-            machine = "Tomo 2"
-
-        elif "tomo 4" in task_name_lower:
-            machine = "Tomo 4"
-
-        elif "tomo 7" in task_name_lower:
-            machine = "Tomo 7"
-
-        else:
-            machine = "Nova"
-
-        Patient_EnAttente_count[machine] += 1
-
-        Patient_EnAttente_details[machine].append({
-            "ipp": row["ipp"],
-            "last_name": row["last_name"],
-            "first_name": row["first_name"],
-            "tdm_date": row["tdm_date"],
-            "task": row["realisation_dosi_task"],
-            "called": row["appel_patient_status"],
-            "validation_date": row["validation_date"],
-            "MET": row["met_start"],
-            "workflow": row["Workflow"]
-        })
-
-    print("\nRépartition des machines :\n")
-
-    for machine, count in Patient_EnAttente_count.items():
-        print(f"{machine} = {count}")
-
-    # =========================
-    # DETERMINE SI LE CQ PATIENT EST CREE SUR TIMEPLANNER
-    # On récupère dans la table 'all_cq_patient_appts' tous les numéro contenus dans 'patient_id' puis,
-    # on vérifie dans toute la table 'patient' si il existe un 'id' = 'patient_id'.
-    # si oui alors on ajoute 'patient_id' à 'cq_patient_ids' 
-    # Etape 2/2
-    # =========================
-
-    # 1) récupère les numéros contenues dans 'patient_id' de la table 'all_cq_patient_appts'
-    cq_patient_appt_ids = {
-        appt.patient_id
-        for appt in all_cq_patient_appts
-        if appt.patient_id is not None
-    }
-
-    # 2) récupère les numéros d'ID de tous les patients de la table 'patients'
-    patient_table_ids = {
-        p.id for p in patients
-    }
-
-    # 3) retient UNIQUEMENT les numéros d'ID qui sont présents dans les 2 tables (cq_patient_appt_ids et patient_table_ids))
-    cq_patient_ids = cq_patient_appt_ids.intersection(patient_table_ids)
-
-    print("CQ patient IDs:", cq_patient_ids)
-
-   
-
-    for patient in patients:
-
-        # =========================================================
-        # RECHERCHE DES 'MET' ASSOCIÉS AU PATIENT (pour info et tri)
-        # =========================================================
-        # récupérer les MET valides
-        met_appointments = [
-            appt for appt in patient.appointments
-            if (
-                appt.service_type
-                and appt.service_type.upper().startswith("MET")
-                and appt.start_scheduled_period
-                and str(appt.status or "").lower() != "cancelled"
-            )
-        ]
-
-        # prendre la MET la plus récente (car le patient peut avoir eu un traitement par le passé)
-        met_appt = None
-
-        if met_appointments:
-            met_appt = max(
-                met_appointments,
-                key=lambda x: x.start_scheduled_period
+            latest_validation = max(
+                validation_tasks,
+                key=lambda x: x.last_updated
             )
 
-        # =========================================================
-        # RECHERCHE DE LA TACHE 'FINALISATION DOSSIER' => PHYSICIEN ou DOSIMETRISTE AYANT CRÉÉ LA TÂCHE CQ
-        # =========================================================
-        finalisation_tasks = [
-            t for cp in patient.careplans
-            for t in cp.tasks
-            if (
-                t.display_focus
-                and t.display_focus.lower().startswith("finalisation du dossier")
-            )
-        ]
+            validation_date = latest_validation.last_updated
 
-        # prendre la plus récente
-        latest_finalisation = None
-
-        if finalisation_tasks:
-            latest_finalisation = max(
-                finalisation_tasks,
-                key=lambda x: x.last_updated or datetime.min
-            )
-
-        # récupération du nom du physicien ou du dosimétriste
-        physicist = None
-
-        if latest_finalisation:
-            physicist = (
-                latest_finalisation.recipient
-                or latest_finalisation.recipient_id
-            )
-
-        # =========================================================
-        # RECHERCHE PROGRAMMATION CQ PATIENT DANS TIMEPLANNER
-        # =========================================================
-        cq_patient_today = patient.id in cq_patient_ids
-
-        for careplan in patient.careplans:
-
-            for task in careplan.tasks:
-
+            # ==========================================
+            # Finalisation du dossier = draft
+            # ==========================================
+            finalisation_tasks = [
+                t
+                for cp in patient.careplans
+                for t in cp.tasks
                 if (
-                    task.display_focus
-                    and (
-                        task.display_focus.lower().startswith("réalisation du cq")
-                        or task.display_focus.lower().startswith("réalisation des cq")
-                        or task.display_focus.lower().startswith("replanif")
+                    t.display_focus
+                    and t.display_focus.lower().startswith(
+                        "finalisation du dossier"
                     )
-                ):
+                    and str(t.status or "").lower() == "draft"
+                    and t.last_updated
+                    and t.last_updated >= two_weeks_ago
+                )
+            ]
 
-                    # FILTER STATUS
-                    task_status = task.status.lower() if task.status else ""
+            if not finalisation_tasks:
+                continue
 
-                    if "cancelled" in task_status:
-                        continue
+            # ==========================================
+            # Réalisation du TDM
+            # ==========================================
+            tdm_tasks = [
+                t
+                for cp in patient.careplans
+                for t in cp.tasks
+                if (
+                    t.display_focus
+                    and t.display_focus.lower().startswith("scanner de simulation")
+                    and t.last_updated
+                )
+            ]
 
-                    # =========================================================
-                    # MISE DANS UNE TABLE DES INFIRMATIONS COLLECTEES
-                    # =========================================================
-                    cq_patient_today = patient.id in cq_patient_ids
-                    rows.append({
+            latest_tdm = (
+                max(tdm_tasks, key=lambda x: x.last_updated)
+                if tdm_tasks
+                else None
+            )
 
-                        # PATIENT
-                        "ipp": patient.ipp,
-                        "last_name": patient.family_name_official,
-                        "first_name": patient.given,
-                        "physicist": physicist,
+            tdm_date = (
+                latest_tdm.last_updated
+                if latest_tdm
+                else None
+            )
 
-                        # CQ PATIENT
-                        "Timeplanner": cq_patient_today,
-                        "patient_id": patient.id,
+            # ==========================================
+            # Appeler patient (status)
+            # ==========================================
+            appel_patient_tasks = [
+                t
+                for cp in patient.careplans
+                for t in cp.tasks
+                if (
+                    t.display_focus
+                    and t.display_focus.lower().startswith("appeler patient")
+                    and t.last_updated
+                    and t.last_updated >= two_weeks_ago
+                )
+            ]
 
-                        # TASK
-                        "task_display_focus": task.display_focus,
-                        "task_code": task.code,
-                        "task_status": task.status,
-                        "task_note": task.note,
+            latest_appel = (
+                max(appel_patient_tasks, key=lambda x: x.last_updated)
+                if appel_patient_tasks
+                else None
+            )
 
-                        # CAREPLAN
-                        "careplan_id": careplan.id,
+            appel_patient_status = latest_appel.status if latest_appel else None
 
-                        # APPOINTMENT MET
-                        "met_service_type": met_appt.service_type if met_appt else None,
-                        "met_start": met_appt.start_scheduled_period if met_appt else None,
-                        "met_status": met_appt.status if met_appt else None,
-                    })
+            # ==========================================
+            # MET (la plus récente après la validation médicale)
+            # ==========================================
+            met_appointments = [
+                appt
+                for appt in patient.appointments
+                if (
+                    appt.service_type
+                    and appt.service_type.upper().startswith("MET")
+                    and appt.start_scheduled_period
+                    and appt.start_scheduled_period > validation_date
+                    and str(appt.status or "").lower() != "cancelled"
+                )
+            ]
 
-    # =========================================================
-    # LOAD QA
-    # =========================================================
-    QA = load_daily_qa(session)
-    QA = filter_today_qa(QA)
-    MACHINE_SCHEDULE = load_machine_schedule(session)
+            met_appt = None
 
-    session.close()
+            if met_appointments:
+                met_appt = max(
+                    met_appointments,
+                    key=lambda x: x.start_scheduled_period
+                )
 
-    rows = clean_cq_rows(rows)
+            met_start = (
+                met_appt.start_scheduled_period
+                if met_appt else None
+            )
 
-    print("\nROWS RAW:")
-    print(rows)
+            # ==========================================
+            # Réalisation dosi (nom exact de la tâche)
+            # ==========================================
+            realisation_dosi_task_name = None
 
-    # =========================================================
-    # FILTRE LES PATIENTS PAR MACHINE CONCERNEE (TOMO 2, TOMO 4, TOMO 7, NOVA)
-    # =========================================================
-    Nova = []
-    Tomo2 = []
-    Tomo4 = []
-    Tomo7 = []
+            for cp in patient.careplans:
+                for t in cp.tasks:
+                    if (
+                        t.display_focus
+                        and "réalisation dosi" in t.display_focus.lower()
+                        and t.last_updated
+                        and t.last_updated >= two_weeks_ago
+                    ):
+                        realisation_dosi_task_name = t.display_focus
+                        break
+                if realisation_dosi_task_name:
+                    break
 
-    for row in rows:
+            # ==========================================
+            # Evite les doublons patients
+            # ==========================================
+            if patient.id in added_patient_ids:
+                continue
 
-        focus = row["task_display_focus"]
+            added_patient_ids.add(patient.id)
 
-        if not focus:
-            continue
+            # ==========================================
+            # Workflow (titre du dernier careplan parcouru)
+            # ==========================================
+            workflow_title = None
 
-        focus_lower = focus.lower()
+            if patient.careplans:
+                workflow_title = patient.careplans[-1].title
 
-        #
-        # TOMO 2
-        #
-        if "tomo 2" in focus_lower:
-            Tomo2.append(row)
+            # ==========================================
+            # Patient susceptible de tomber prochainement
+            # ==========================================
+            va_tomber = bool(validation_tasks and met_start)
 
-        #
-        # TOMO 4
-        #
-        elif "tomo 4" in focus_lower:
-            Tomo4.append(row)
+            rows2.append({
+                "ipp": patient.ipp,
+                "last_name": patient.family_name_official,
+                "first_name": patient.given,
+                "patient_id": patient.id,
+                "tdm_date": tdm_date,
+                "realisation_dosi_task": realisation_dosi_task_name,
+                "Workflow": workflow_title,
+                "appel_patient_status": appel_patient_status,
+                "validation_date": validation_date,
+                "met_start": met_start,
+                "va_tomber": va_tomber
+            })
 
-        #
-        # TOMO 7
-        #
-        elif "tomo 7" in focus_lower:
-            Tomo7.append(row)
+        print(f"Patients CQ imminent trouvés : {len(rows2)}")
 
-        #
-        # NOVA
-        #
-        elif (
-            "ruby" in focus_lower
-            or "octa4d" in focus_lower
-        ):
-            Nova.append(row)
+        # ==========================================
+        # Classement des patients en attente par machine
+        # ==========================================
+        Patient_EnAttente_count = defaultdict(int)
+        Patient_EnAttente_details = {
+            "Tomo 2": [],
+            "Tomo 4": [],
+            "Tomo 7": [],
+            "Nova": []
+        }
 
-    print("Nova:", len(Nova))
-    print("Tomo2:", len(Tomo2))
-    print("Tomo4:", len(Tomo4))
-    print("Tomo7:", len(Tomo7))
+        for row in rows2:
 
-    # =========================================================
-    # TRIE DES PATIENTS PAR ORDRE DE PRIORITÉ DE LA MET (MET la plus proche en premier, puis les autres, les patients sans MET à la fin)
-    # =========================================================
-    Nova = sort_by_met_start(Nova)
-    Tomo2 = sort_by_met_start(Tomo2)
-    Tomo4 = sort_by_met_start(Tomo4)
-    Tomo7 = sort_by_met_start(Tomo7)
+            task_name = row.get("Workflow")
 
-    check_existing_folders(Nova, Tomo2, Tomo4, Tomo7)
+            if not task_name:
+                continue
+
+            task_name_lower = task_name.lower()
+
+            if "tomo 2" in task_name_lower:
+                machine = "Tomo 2"
+
+            elif "tomo 4" in task_name_lower:
+                machine = "Tomo 4"
+
+            elif "tomo 7" in task_name_lower:
+                machine = "Tomo 7"
+
+            else:
+                machine = "Nova"
+
+            Patient_EnAttente_count[machine] += 1
+
+            Patient_EnAttente_details[machine].append({
+                "ipp": row["ipp"],
+                "last_name": row["last_name"],
+                "first_name": row["first_name"],
+                "tdm_date": row["tdm_date"],
+                "task": row["realisation_dosi_task"],
+                "called": row["appel_patient_status"],
+                "validation_date": row["validation_date"],
+                "MET": row["met_start"],
+                "workflow": row["Workflow"],
+                "va_tomber": row["va_tomber"]
+            })
+
+        print("\nRépartition des machines :\n")
+
+        for machine, count in Patient_EnAttente_count.items():
+            print(f"{machine} = {count}")
+
+        # =========================
+        # CQ PATIENT CREE SUR TIMEPLANNER — 2/2
+        # =========================
+        cq_patient_appt_ids = {
+            appt.patient_id
+            for appt in all_cq_patient_appts
+            if appt.patient_id is not None
+        }
+
+        patient_table_ids = {
+            p.id for p in patients
+        }
+
+        cq_patient_ids = cq_patient_appt_ids.intersection(patient_table_ids)
+
+        print("CQ patient IDs:", cq_patient_ids)
+
+        for patient in patients:
+
+            # =========================================================
+            # MET ASSOCIÉS AU PATIENT
+            # =========================================================
+            met_appointments = [
+                appt for appt in patient.appointments
+                if (
+                    appt.service_type
+                    and appt.service_type.upper().startswith("MET")
+                    and appt.start_scheduled_period
+                    and str(appt.status or "").lower() != "cancelled"
+                )
+            ]
+
+            met_appt = None
+
+            if met_appointments:
+                met_appt = max(
+                    met_appointments,
+                    key=lambda x: x.start_scheduled_period
+                )
+
+            # =========================================================
+            # 'FINALISATION DOSSIER' => PHYSICIEN / DOSIMETRISTE
+            # =========================================================
+            finalisation_tasks = [
+                t for cp in patient.careplans
+                for t in cp.tasks
+                if (
+                    t.display_focus
+                    and t.display_focus.lower().startswith("finalisation du dossier")
+                )
+            ]
+
+            latest_finalisation = None
+
+            if finalisation_tasks:
+                latest_finalisation = max(
+                    finalisation_tasks,
+                    key=lambda x: x.last_updated or datetime.min
+                )
+
+            physicist = None
+
+            if latest_finalisation:
+                physicist = (
+                    latest_finalisation.recipient
+                    or latest_finalisation.recipient_id
+                )
+
+            cq_patient_today = patient.id in cq_patient_ids
+
+            for careplan in patient.careplans:
+
+                for task in careplan.tasks:
+
+                    if (
+                        task.display_focus
+                        and (
+                            task.display_focus.lower().startswith("réalisation du cq")
+                            or task.display_focus.lower().startswith("réalisation des cq")
+                            or task.display_focus.lower().startswith("replanif")
+                        )
+                    ):
+
+                        # FILTER STATUS
+                        task_status = task.status.lower() if task.status else ""
+
+                        if "cancelled" in task_status:
+                            continue
+
+                        rows.append({
+
+                            # PATIENT
+                            "ipp": patient.ipp,
+                            "last_name": patient.family_name_official,
+                            "first_name": patient.given,
+                            "physicist": physicist,
+
+                            # CQ PATIENT
+                            "Timeplanner": cq_patient_today,
+                            "patient_id": patient.id,
+
+                            # TASK
+                            "task_display_focus": task.display_focus,
+                            "task_code": task.code,
+                            "task_status": task.status,
+                            "task_note": task.note,
+
+                            # CAREPLAN
+                            "careplan_id": careplan.id,
+
+                            # APPOINTMENT MET
+                            "met_service_type": met_appt.service_type if met_appt else None,
+                            "met_start": met_appt.start_scheduled_period if met_appt else None,
+                            "met_status": met_appt.status if met_appt else None,
+                        })
+
+        # =========================================================
+        # LOAD QA + PLANNING MACHINES
+        # =========================================================
+        QA = load_daily_qa(session)
+        QA = filter_today_qa(QA)
+        MACHINE_SCHEDULE = load_machine_schedule(session)
+
+        rows = clean_cq_rows(rows)
+
+        # =========================================================
+        # FILTRE PAR MACHINE
+        # =========================================================
+        Nova = []
+        Tomo2 = []
+        Tomo4 = []
+        Tomo7 = []
+
+        for row in rows:
+
+            focus = row["task_display_focus"]
+
+            if not focus:
+                continue
+
+            focus_lower = focus.lower()
+
+            if "tomo 2" in focus_lower:
+                Tomo2.append(row)
+
+            elif "tomo 4" in focus_lower:
+                Tomo4.append(row)
+
+            elif "tomo 7" in focus_lower:
+                Tomo7.append(row)
+
+            elif (
+                "ruby" in focus_lower
+                or "octa4d" in focus_lower
+            ):
+                Nova.append(row)
+
+        print("Nova:", len(Nova))
+        print("Tomo2:", len(Tomo2))
+        print("Tomo4:", len(Tomo4))
+        print("Tomo7:", len(Tomo7))
+
+        # =========================================================
+        # TRI PAR PRIORITÉ DE MET
+        # =========================================================
+        Nova = sort_by_met_start(Nova)
+        Tomo2 = sort_by_met_start(Tomo2)
+        Tomo4 = sort_by_met_start(Tomo4)
+        Tomo7 = sort_by_met_start(Tomo7)
+
+        # =========================================================
+        # EXPLORATION RESEAU (lente)
+        # =========================================================
+        check_existing_folders(Nova, Tomo2, Tomo4, Tomo7)
+
+        # =========================================================
+        # PATIENTS PROGRAMMES PAR MACHINE
+        # =========================================================
+        machines, compte_down, remaining_today = load_today_patients_by_machine(session)
+
+        # =========================================================
+        # DERNIERE MAJ DE LA BASE (récupérée ici, dans le thread)
+        # =========================================================
+        last_db_update = get_last_database_update(session)
+
+    finally:
+        session.close()
+
+    return (
+        Nova,
+        Tomo2,
+        Tomo4,
+        Tomo7,
+        dict(Patient_EnAttente_count),
+        Patient_EnAttente_details,
+        QA,
+        MACHINE_SCHEDULE,
+        machines,
+        compte_down,
+        remaining_today,
+        last_db_update,
+    )
 
 
-    # =========================================================
-    # RECUPERE LES PATIENTS PROGRAMMES PAR MACHINE
-    # =========================================================
-    machines, compte_down, remaining_today = load_today_patients_by_machine(session)
+# =========================================================
+# WORKER THREAD — exécute load_data() en arrière-plan
+# =========================================================
+class DataLoaderWorker(QThread):
 
-    return Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE, machines, compte_down, remaining_today
+    data_loaded = Signal(object)
+    error_occurred = Signal(str)
 
+    def run(self):
+        try:
+            result = load_data()
+            self.data_loaded.emit(result)
+
+        except Exception as e:
+            err_msg = "".join(
+                traceback.format_exception(type(e), e, e.__traceback__)
+            )
+            self.error_occurred.emit(err_msg)
+
+
+# =========================================================
+# WIDGET REPLIABLE
+# =========================================================
 class CollapsibleWidget(QWidget):
 
     def __init__(self, title="Titre"):
@@ -1977,29 +1760,33 @@ class CollapsibleWidget(QWidget):
 
         self.content.setVisible(is_open)
 
-        # changement du symbole ▶ / ▼
         if is_open:
-            self.toggle_button.setText(self.toggle_button.text().replace("▶", "▼"))
+            self.toggle_button.setText(
+                self.toggle_button.text().replace("▶", "▼")
+            )
         else:
-            self.toggle_button.setText(self.toggle_button.text().replace("▼", "▶"))
+            self.toggle_button.setText(
+                self.toggle_button.text().replace("▼", "▶")
+            )
 
+
+# =========================================================
+# FENETRE PRINCIPALE
+# =========================================================
 class MainWindow(QMainWindow):
-    # =====================================================
-    # INTERFACE QT
-    # UPDATE QA HEADER
-    # =====================================================
+
     TIME_RULES = {
         "tomo": {
-            "fixed": 7,   # montage + démontage 
-            "per_case": 12 # mesure + exploitation
+            "fixed": 7,     # montage + démontage
+            "per_case": 12  # mesure + exploitation
         },
         "ruby": {
-            "fixed": 8,   # montage + démontage + calibrage 
-            "per_case": 12 # mesure + exploitation
+            "fixed": 8,     # montage + démontage + calibrage
+            "per_case": 12  # mesure + exploitation
         },
         "octa": {
-            "fixed": 11,   # montage + démontage + calibrage
-            "per_case": 9 # mesure + exploitation
+            "fixed": 11,    # montage + démontage + calibrage
+            "per_case": 9   # mesure + exploitation
         }
     }
 
@@ -2008,6 +1795,375 @@ class MainWindow(QMainWindow):
         "per_case": 15
     }
 
+    # =====================================================
+    # INIT
+    # =====================================================
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("CQ Dashboard")
+        self.resize(1400, 500)
+
+        self.now = datetime.now()
+        self.limit = add_business_days(self.now, 2)
+        self.db_error_shown = False
+
+        self.Patient_EnAttente_count = {}
+        self.Patient_EnAttente_details = {}
+
+        # =========================
+        # ROOT WIDGET
+        # =========================
+        root = QWidget()
+        root_layout = QVBoxLayout()
+        root_layout.setContentsMargins(12, 12, 12, 8)
+        root_layout.setSpacing(8)
+
+        # =========================
+        # QA LABEL
+        # =========================
+        self.qa_label = QLabel()
+        self.qa_label.setStyleSheet("""
+            QLabel {
+                background-color: #FFF6DE;
+                border: 1px solid #F5D98B;
+                border-radius: 8px;
+                padding: 10px 14px;
+                font-size: 14px;
+                font-weight: 600;
+                color: #6B5215;
+            }
+        """)
+        root_layout.addWidget(self.qa_label)
+
+        # =========================
+        # MACHINE LABEL
+        # =========================
+        self.machine_label = QLabel()
+        self.machine_label.setStyleSheet("""
+            QLabel {
+                background-color: #E9F1FF;
+                border: 1px solid #AECBF5;
+                border-radius: 8px;
+                padding: 10px 14px;
+                font-size: 14px;
+                font-weight: 600;
+                color: #204E8C;
+            }
+        """)
+        root_layout.addWidget(self.machine_label)
+
+        self.qa_legend = QLabel("* : patients restants")
+        self.qa_legend.setStyleSheet("""
+            QLabel {
+                color: #9497A0;
+                font-size: 11px;
+                padding: 2px 4px;
+            }
+        """)
+        root_layout.addWidget(self.qa_legend)
+
+        # =========================
+        # TABS
+        # =========================
+        self.tabs = QTabWidget()
+        root_layout.addWidget(self.tabs)
+
+        root.setLayout(root_layout)
+        self.setCentralWidget(root)
+
+        # =========================
+        # STATUS BAR
+        # =========================
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+
+        self.last_refresh_label = QLabel("Dernier refresh : -")
+        self.status_bar.addPermanentWidget(self.last_refresh_label)
+
+        self.db_label = QLabel("DB : -")
+        self.db_label.setMinimumWidth(320)
+        self.status_bar.addPermanentWidget(self.db_label)
+
+        # =========================
+        # SIGNAL ONGLETS — connecté UNE SEULE FOIS
+        # =========================
+        self.tabs.currentChanged.connect(self.on_tab_changed)
+
+        # =========================
+        # WORKER THREAD — créé UNE SEULE FOIS et réutilisé
+        # parent = self => durée de vie liée à la fenêtre (pas de deleteLater)
+        # =========================
+        self.worker = DataLoaderWorker(self)
+        self.worker.data_loaded.connect(self.on_data_loaded)
+        self.worker.error_occurred.connect(self.on_data_error)
+
+        # =========================
+        # FIRST LOAD (asynchrone)
+        # =========================
+        self.trigger_refresh()
+
+        # =========================
+        # AUTO REFRESH TIMER
+        # =========================
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.trigger_refresh)
+        self.timer.start(180_000)  # 3 minutes
+
+        # =========================
+        # BLINK TIMER SQL STATUS
+        # =========================
+        self.blink_state = False
+
+        self.blink_timer = QTimer(self)
+        self.blink_timer.timeout.connect(self.toggle_db_blink)
+        self.blink_timer.start(500)  # 500 ms
+
+    # =====================================================
+    # REFRESH ASYNCHRONE
+    # =====================================================
+    def trigger_refresh(self):
+
+        # Un chargement est encore en cours (réseau lent...) → on saute ce cycle
+        if self.worker.isRunning():
+            print("Refresh déjà en cours, cycle ignoré :", datetime.now())
+            return
+
+        print("Lancement du rafraîchissement asynchrone :", datetime.now())
+        self.last_refresh_label.setText("Actualisation en cours (arrière-plan)...")
+
+        # Un QThread terminé peut être relancé avec start()
+        self.worker.start()
+
+    def on_data_loaded(self, result):
+
+        (
+            Nova,
+            Tomo2,
+            Tomo4,
+            Tomo7,
+            Patient_EnAttente_count,
+            Patient_EnAttente_details,
+            QA,
+            MACHINE_SCHEDULE,
+            machines,
+            compte_down,
+            remaining_today,
+            last_db_update,
+        ) = result
+
+        self.now = datetime.now()
+        self.limit = add_business_days(self.now, 2)
+
+        self.Patient_EnAttente_count = Patient_EnAttente_count
+        self.Patient_EnAttente_details = Patient_EnAttente_details
+
+        # La connexion revient après une panne
+        if self.db_error_shown:
+
+            QMessageBox.information(
+                self,
+                "Connexion rétablie",
+                "La connexion à la base SQL est de nouveau disponible."
+            )
+
+            self.db_error_shown = False
+
+        # =========================
+        # HEADERS
+        # =========================
+        self.update_qa_header(QA, compte_down, machines)
+        self.update_machine_footer(MACHINE_SCHEDULE, remaining_today)
+
+        # =========================
+        # SAVE CURRENT TAB
+        # =========================
+        current_index = self.tabs.currentIndex()
+
+        # =========================
+        # SUPPRESSION REELLE DES ANCIENS ONGLETS (anti fuite mémoire)
+        # =========================
+        self.tabs.blockSignals(True)
+
+        while self.tabs.count():
+            old_widget = self.tabs.widget(0)
+            self.tabs.removeTab(0)
+            old_widget.setParent(None)
+            old_widget.deleteLater()
+
+        # =========================
+        # REBUILD TABS
+        # =========================
+        self.tabs.addTab(
+            self.create_table_tab(Tomo2),
+            f"Tomo2 ({len(Tomo2)})"
+        )
+
+        self.tabs.addTab(
+            self.create_table_tab(Tomo4),
+            f"Tomo4 ({len(Tomo4)})"
+        )
+
+        self.tabs.addTab(
+            self.create_table_tab(Tomo7),
+            f"Tomo7 ({len(Tomo7)})"
+        )
+
+        self.tabs.addTab(
+            self.create_table_tab(Nova),
+            f"Nova(s) ({len(Nova)})"
+        )
+
+        self.tabs.blockSignals(False)
+
+        # =========================
+        # RESTORE TAB
+        # =========================
+        if 0 <= current_index < self.tabs.count():
+            self.tabs.setCurrentIndex(current_index)
+        else:
+            self.tabs.setCurrentIndex(0)
+
+        # force la mise à jour du pied de page / patients en attente
+        self.on_tab_changed(self.tabs.currentIndex())
+
+        # =========================
+        # UPDATE LAST REFRESH TIME
+        # =========================
+        self.last_refresh_label.setText(
+            f"Dernier refresh (3 min) : {self.now.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        # =========================================================
+        # Code couleur + clignotement sur la dernière MAJ de la DB
+        # =========================================================
+        if last_db_update:
+            delta_min = (self.now - last_db_update).total_seconds() / 60
+        else:
+            delta_min = None
+
+        # =========================
+        # UNKNOWN
+        # =========================
+        if last_db_update is None:
+
+            self.db_alert_level = "unknown"
+
+            self.db_label.setText("⚪ SQL DataBase : inconnue")
+
+            self.db_label.setStyleSheet("""
+                QLabel {
+                    color: gray;
+                    font-weight: bold;
+                }
+            """)
+
+        # =========================
+        # CRITICAL > 15 min
+        # =========================
+        elif delta_min > 15:
+
+            self.db_alert_level = "critical"
+
+            self.db_label.setText(
+                f"🔴 SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+        # =========================
+        # ALERT > 10 min
+        # =========================
+        elif delta_min > 10:
+
+            self.db_alert_level = "alert"
+
+            self.db_label.setText(
+                f"🔴 SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+            self.db_label.setStyleSheet("""
+                QLabel {
+                    color: red;
+                    font-weight: bold;
+                }
+            """)
+
+        # =========================
+        # WARNING > 5 min
+        # =========================
+        elif delta_min > 5:
+
+            self.db_alert_level = "warning"
+
+            self.db_label.setText(
+                f"🟠 SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+            self.db_label.setStyleSheet("""
+                QLabel {
+                    color: orange;
+                    font-weight: bold;
+                }
+            """)
+
+        # =========================
+        # OK
+        # =========================
+        else:
+
+            self.db_alert_level = "ok"
+
+            self.db_label.setText(
+                f"🟢 SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+            self.db_label.setStyleSheet("""
+                QLabel {
+                    color: green;
+                    font-weight: bold;
+                }
+            """)
+
+    def on_data_error(self, err_msg):
+
+        print("ERREUR LORS DU CHARGEMENT DES DONNÉES :")
+        print(err_msg)
+
+        self.last_refresh_label.setText(
+            f"Échec du refresh : {datetime.now().strftime('%H:%M:%S')}"
+        )
+
+        if not self.db_error_shown:
+
+            QMessageBox.critical(
+                self,
+                "Erreur SQL / Réseau",
+                "Impossible de se connecter à la base de données "
+                "ou d'accéder au réseau.\n\n"
+                f"{err_msg}"
+            )
+
+            self.db_error_shown = True
+
+    # =====================================================
+    # FERMETURE PROPRE
+    # =====================================================
+    def closeEvent(self, event):
+
+        self.timer.stop()
+        self.blink_timer.stop()
+
+        if self.worker.isRunning():
+
+            # on laisse au thread jusqu'à 15 s pour finir proprement
+            if not self.worker.wait(15000):
+                self.worker.terminate()
+                self.worker.wait()
+
+        super().closeEvent(event)
+
+    # =====================================================
+    # CALCULS / AFFICHAGE
+    # =====================================================
     def refresh_current_tab_footer(self):
         index = self.tabs.currentIndex()
         self.on_tab_changed(index)
@@ -2016,7 +2172,6 @@ class MainWindow(QMainWindow):
         # =========================================================
         # Calcul du temps estimé pour la réalisation des CQ
         # =========================================================
-
         used_categories = {
             "tomo": 0,
             "ruby": 0,
@@ -2025,9 +2180,7 @@ class MainWindow(QMainWindow):
 
         total_minutes = 0
 
-        # =========================
         # stockage TOMO BeamOn
-        # =========================
         tomo_beam_on_values = []
 
         # =========================
@@ -2058,20 +2211,15 @@ class MainWindow(QMainWindow):
                 used_categories.setdefault("other", 0)
                 used_categories["other"] += 1
 
-            # =========================
             # récupération BeamOn TOMO
-            # =========================
             if "tomo" in task_text:
                 beam_item = table_widget.item(row, 15)  # Beam On (min)
                 if beam_item:
                     try:
                         tomo_beam_on_values.append(float(beam_item.text()))
-                    except:
+                    except Exception:
                         pass
 
-        # =========================
-        # DEBUG (optionnel)
-        # =========================
         if tomo_beam_on_values:
             print("===== TOMO Beam On (min) =====")
             print(tomo_beam_on_values)
@@ -2087,21 +2235,16 @@ class MainWindow(QMainWindow):
 
             rule = self.TIME_RULES.get(key, self.DEFAULT_TIME)
 
-            # =========================
-            # CAS TOMO (spécial)
-            # =========================
             if key == "tomo":
 
                 # 1 seul setup (fixed)
                 total_minutes += rule["fixed"]
 
-                # par patient sélectionné :
-                # 2 min + beam-on
+                # par patient sélectionné : 3 min + beam-on
                 for beam in tomo_beam_on_values:
                     total_minutes += 3 + beam
 
             else:
-                # comportement standard
                 total_minutes += rule["fixed"]
                 total_minutes += count * rule["per_case"]
 
@@ -2109,10 +2252,17 @@ class MainWindow(QMainWindow):
 
     def on_tab_changed(self, index):
 
-        tab_text = self.tabs.tabText(index)
-        tab_name = tab_text.split("(")[0].strip()
+        # tabs.clear() / removeTab émettent currentChanged(-1)
+        if index is None or index < 0:
+            return
 
         widget = self.tabs.widget(index)
+
+        if widget is None:
+            return
+
+        tab_text = self.tabs.tabText(index)
+        tab_name = tab_text.split("(")[0].strip()
 
         # =========================
         # FOOTER TEMPS
@@ -2133,21 +2283,9 @@ class MainWindow(QMainWindow):
         # =========================
         if hasattr(widget, "patient_widget"):
 
-            counts = getattr(
-                self,
-                "Patient_EnAttente_count",
-                {}
-            )
+            counts = getattr(self, "Patient_EnAttente_count", {}) or {}
+            details = getattr(self, "Patient_EnAttente_details", {}) or {}
 
-            details = getattr(
-                self,
-                "Patient_EnAttente_details",
-                {}
-            )
-
-            # -------------------------
-            # Détermination machine
-            # -------------------------
             machine = None
 
             if tab_name == "Tomo2":
@@ -2162,9 +2300,6 @@ class MainWindow(QMainWindow):
             elif "Nova" in tab_name:
                 machine = "Nova"
 
-            # -------------------------
-            # Titre du widget
-            # -------------------------
             count = counts.get(machine, 0)
 
             title = (
@@ -2172,13 +2307,13 @@ class MainWindow(QMainWindow):
                 f"{machine} = {count}"
             )
 
+            is_open = widget.patient_widget.toggle_button.isChecked()
+            arrow = "▼" if is_open else "▶"
+
             widget.patient_widget.toggle_button.setText(
-                f"▼ {title}"
+                f"{arrow} {title}"
             )
 
-            # -------------------------
-            # Contenu du widget
-            # -------------------------
             patients = details.get(machine, [])
 
             if not patients:
@@ -2211,13 +2346,16 @@ class MainWindow(QMainWindow):
                         if p.get("MET")
                         else "-"
                     )
+
                     called = p.get("called") or "-"
                     workflow = p.get("workflow") or "-"
+
                     validation_date = (
                         p.get("validation_date").strftime("%d/%m/%Y")
                         if p.get("validation_date")
                         else "-"
                     )
+
                     tdm_date = (
                         p.get("tdm_date").strftime("%d/%m/%Y")
                         if p.get("tdm_date")
@@ -2241,7 +2379,7 @@ class MainWindow(QMainWindow):
                 widget.patient_widget.content.setText(html)
 
     def toggle_db_blink(self):
-        # Clignottement du message d'alerte de la database SQL en cas de délai de refresh trop long (indication visuelle pour l'utilisateur)
+        # Clignotement du message d'alerte de la DB SQL si délai trop long
         if not hasattr(self, "db_alert_level"):
             return
 
@@ -2277,6 +2415,7 @@ class MainWindow(QMainWindow):
             """)
 
     def update_machine_footer(self, schedule, remaining_today):
+
         MACHINE_LABEL = {
             "TOMO2": "Tomo 2",
             "0210462": "Tomo 4",
@@ -2286,6 +2425,7 @@ class MainWindow(QMainWindow):
             "RADI7": "Radi 7",
             "HALCYON8": "Halcyon 8",
         }
+
         ORDER = {
             "TOMO2": 0,
             "NOVA3": 1,
@@ -2331,7 +2471,7 @@ class MainWindow(QMainWindow):
             machine_label = MACHINE_LABEL.get(machine_key, machine_key)
 
             count = remaining_today.get(machine_key, None)
-            
+
             if count is None or count == "none":
                 extra = ""
             else:
@@ -2342,8 +2482,6 @@ class MainWindow(QMainWindow):
         text = "Fin de journée :   " + "   |   ".join(lines)
 
         self.machine_label.setText(text)
-    
-        from datetime import timedelta
 
     def compute_real_cq_slot(self, qa_row, machines):
 
@@ -2357,7 +2495,7 @@ class MainWindow(QMainWindow):
         intervals = []
 
         # =========================
-        # récupérer toutes les tâches qui empiètent
+        # toutes les tâches qui empiètent
         # =========================
         for task in machines.get(machine, []):
 
@@ -2367,27 +2505,22 @@ class MainWindow(QMainWindow):
             if not start or not end:
                 continue
 
-            # ignore CQ tasks si jamais présentes
             service_type = str(task.get("service_type") or "").lower()
+
             if "cq patient" in service_type or "cq physique" in service_type:
                 continue
 
-            # overlap avec CQ ?
             if end <= cq_start or start >= cq_end:
                 continue
 
-            # zone de coupure
             intervals.append((max(start, cq_start), min(end, cq_end)))
 
         # =========================
-        # si aucune coupure → créneau intact
+        # aucune coupure → créneau intact
         # =========================
         if not intervals:
             return cq_start, cq_end, True
 
-        # =========================
-        # on construit les trous (inversion des overlaps)
-        # =========================
         intervals.sort()
 
         free_slots = []
@@ -2403,9 +2536,6 @@ class MainWindow(QMainWindow):
         if cursor < cq_end:
             free_slots.append((cursor, cq_end))
 
-        # =========================
-        # on prend le plus grand segment restant (CQ exploitable)
-        # =========================
         if not free_slots:
             return None, None, False
 
@@ -2528,290 +2658,9 @@ class MainWindow(QMainWindow):
             "Prochains créneaux CQ :   " + "   |   ".join(lines)
         )
 
-    def refresh_data(self):
-        print("Tentative de refresh :", datetime.now())
-        global Tomo2, Tomo4, Tomo7, Nova, QA
-        self.now = datetime.now()
-        self.limit = add_business_days(self.now, 2)
-
-        # =========================
-        # SAVE CURRENT TAB
-        # =========================
-        current_index = self.tabs.currentIndex()
-
-        # reload data
-        try:
-
-            Nova, Tomo2, Tomo4, Tomo7, Patient_EnAttente_count, Patient_EnAttente_details, QA, MACHINE_SCHEDULE, machines, compte_down, remaining_today = load_data()
-            self.Patient_EnAttente_count = Patient_EnAttente_count
-            self.Patient_EnAttente_details = Patient_EnAttente_details
-
-            # La connexion revient après une panne
-            if self.db_error_shown:
-
-                QMessageBox.information(
-                    self,
-                    "Connexion rétablie",
-                    "La connexion à la base SQL est de nouveau disponible."
-                )
-
-            self.db_error_shown = False
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            if not self.db_error_shown:
-
-                QMessageBox.critical(
-                    self,
-                    "Erreur SQL",
-                    f"Impossible de se connecter à la base de données.\n\n{e}"
-                )
-
-                self.db_error_shown = True
-
-            return
-        
-        self.update_qa_header(QA,compte_down,machines)
-        self.update_machine_footer(MACHINE_SCHEDULE,remaining_today)
-
-        # puis update UI
-        self.tabs.clear()
-
-        self.tabs.addTab(
-            self.create_table_tab(Tomo2),
-            f"Tomo2 ({len(Tomo2)})"
-        )
-
-        self.tabs.addTab(
-            self.create_table_tab(Tomo4),
-            f"Tomo4 ({len(Tomo4)})"
-        )
-
-        self.tabs.addTab(
-            self.create_table_tab(Tomo7),
-            f"Tomo7 ({len(Tomo7)})"
-        )
-
-        self.tabs.addTab(
-            self.create_table_tab(Nova),
-            f"Nova(s) ({len(Nova)})"
-        )
-
-        # =========================
-        # RESTORE TAB
-        # =========================
-        self.tabs.setCurrentIndex(current_index)
-
-        # =========================
-        # UPDATE LAST REFRESH TIME
-        # =========================
-        session = SessionLocal()
-        last_db_update = get_last_database_update(session)
-        session.close()
-        self.last_refresh_label.setText(f"Dernier refresh (3 min) : {self.now.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # =========================================================
-        # Code couleur + clignottement sur l'indication du dernier refresh de la database SQL
-        # =========================================================
-        now = datetime.now()
-
-        if last_db_update:
-            delta_min = (now - last_db_update).total_seconds() / 60
-        else:
-            delta_min = None
-
-        # =========================
-        # UNKNOWN
-        # =========================
-        if last_db_update is None:
-
-            self.db_alert_level = "unknown"
-
-            self.db_label.setText(
-                "⚪ SQL DataBase : inconnue"
-            )
-
-            self.db_label.setStyleSheet("""
-                QLabel {
-                    color: gray;
-                    font-weight: bold;
-                }
-            """)
-
-        # =========================
-        # CRITICAL > 15 min
-        # =========================
-        elif delta_min > 15:
-
-            self.db_alert_level = "critical"
-
-            self.db_label.setText(
-                f"🔴 SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-
-        # =========================
-        # ALERT > 10 min
-        # =========================
-        elif delta_min > 10:
-
-            self.db_alert_level = "alert"
-
-            self.db_label.setText(
-                f"🔴 SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-
-            self.db_label.setStyleSheet("""
-                QLabel {
-                    color: red;
-                    font-weight: bold;
-                }
-            """)
-
-        # =========================
-        # WARNING > 5 min
-        # =========================
-        elif delta_min > 5:
-
-            self.db_alert_level = "warning"
-
-            self.db_label.setText(
-                f"🟠 SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-
-            self.db_label.setStyleSheet("""
-                QLabel {
-                    color: orange;
-                    font-weight: bold;
-                }
-            """)
-
-        # =========================
-        # OK
-        # =========================
-        else:
-
-            self.db_alert_level = "ok"
-
-            self.db_label.setText(
-                f"🟢 SQL DataBase : {last_db_update.strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-
-            self.db_label.setStyleSheet("""
-                QLabel {
-                    color: green;
-                    font-weight: bold;
-                }
-            """)
-
-    def __init__(self):
-        super().__init__()
-
-        self.setWindowTitle("CQ Dashboard")
-        self.resize(1400, 500)
-
-        self.now = datetime.now()
-        self.limit = add_business_days(self.now, 2)
-        self.db_error_shown = False
-        
-        # =========================
-        # ROOT WIDGET
-        # =========================
-        root = QWidget()
-        root_layout = QVBoxLayout()
-        root_layout.setContentsMargins(12, 12, 12, 8)
-        root_layout.setSpacing(8)
-
-        # =========================
-        # QA LABEL
-        # =========================
-        self.qa_label = QLabel()
-        self.qa_label.setStyleSheet("""
-            QLabel {
-                background-color: #FFF6DE;
-                border: 1px solid #F5D98B;
-                border-radius: 8px;
-                padding: 10px 14px;
-                font-size: 14px;
-                font-weight: 600;
-                color: #6B5215;
-            }
-        """)
-        root_layout.addWidget(self.qa_label)
-
-        
-
-
-        self.machine_label = QLabel()
-        self.machine_label.setStyleSheet("""
-            QLabel {
-                background-color: #E9F1FF;
-                border: 1px solid #AECBF5;
-                border-radius: 8px;
-                padding: 10px 14px;
-                font-size: 14px;
-                font-weight: 600;
-                color: #204E8C;
-            }
-        """)
-
-        root_layout.addWidget(self.machine_label)
-
-        self.qa_legend = QLabel("* : patients restants")
-        self.qa_legend.setStyleSheet("""
-            QLabel {
-                color: #9497A0;
-                font-size: 11px;
-                padding: 2px 4px;
-            }
-        """)
-
-        root_layout.addWidget(self.qa_legend)
-
-        # =========================
-        # TABS
-        # =========================
-        self.tabs = QTabWidget()
-
-        root_layout.addWidget(self.tabs)
-
-        root.setLayout(root_layout)
-
-        self.setCentralWidget(root)
-
-        # =========================
-        # STATUS BAR
-        # =========================
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-
-        self.last_refresh_label = QLabel("Dernier refresh : -")
-        self.status_bar.addPermanentWidget(self.last_refresh_label)
-        self.db_label = QLabel("DB : -")
-        self.db_label.setMinimumWidth(320)
-        self.status_bar.addPermanentWidget(self.db_label)
-
-        # =========================
-        # FIRST LOAD
-        # =========================
-        self.refresh_data()
-
-        # =========================
-        # AUTO REFRESH TIMER
-        # =========================
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.refresh_data)
-        self.timer.start(180_000)  # 3 minutes
-
-        # =========================
-        # BLINK TIMER SQL STATUS
-        # =========================
-        self.blink_state = False
-
-        self.blink_timer = QTimer()
-        self.blink_timer.timeout.connect(self.toggle_db_blink)
-        self.blink_timer.start(500)  # 500 ms
-        
+    # =====================================================
+    # CONSTRUCTION D'UN ONGLET
+    # =====================================================
     def create_table_tab(self, data):
 
         widget = QWidget()
@@ -2820,7 +2669,7 @@ class MainWindow(QMainWindow):
         table = QTableWidget()
 
         # =========================
-        # NEW COLUMN COUNT (15 + 2 = 17)
+        # COLUMN COUNT (17)
         # =========================
         table.setColumnCount(17)
         table.setAlternatingRowColors(True)
@@ -2862,12 +2711,13 @@ class MainWindow(QMainWindow):
             "PDF",
             "Adress",
             "Energy",
-            "Duration (min)",   # NEW
-            "Localisation"         # NEW
+            "Duration (min)",
+            "Localisation"
         ])
 
         header_tooltips = [
             "Priorité du dossier",
+            "Sélection pour le calcul du temps",
             "Date MET prévue",
             "Nom du patient",
             "ID patient",
@@ -2879,14 +2729,16 @@ class MainWindow(QMainWindow):
             "Dossier patient existant sur le réseau IUCT ?",
             "Fichiers DICOM (calculs) présents dans le dossier ?",
             "Rapport PDF présent et daté du même jour ou après les exports DICOM",
-            "Nom du dossier où le calcul à été exporté",
+            "Nom du dossier où le calcul a été exporté",
             "Energy",
-            "Durée en minutes",   # NEW
-            "Fraction"         # NEW
+            "Durée en minutes",
+            "Fraction"
         ]
 
-        for col in range(len(header_tooltips)):
-            table.horizontalHeaderItem(col).setToolTip(header_tooltips[col])
+        for col in range(min(len(header_tooltips), table.columnCount())):
+            item = table.horizontalHeaderItem(col)
+            if item:
+                item.setToolTip(header_tooltips[col])
 
         table.setRowCount(len(data))
 
@@ -2900,9 +2752,6 @@ class MainWindow(QMainWindow):
             # =========================
             # COLOR LOGIC
             # =========================
-            color = PASTEL_OK
-            tooltip = ""
-
             if not met_date:
                 color = PASTEL_NONE
                 tooltip = "Aucune date définie"
@@ -2958,7 +2807,7 @@ class MainWindow(QMainWindow):
                 adress = "RA"
 
             # =========================
-            # TOMO DATA (NEW)
+            # TOMO DATA
             # =========================
             tomo_beam_on = patient.get("tomo_duration_min")
             tomo_fraction = patient.get("tomo_fraction")
@@ -2967,12 +2816,16 @@ class MainWindow(QMainWindow):
             # ITEMS
             # =========================
             item0 = QTableWidgetItem(dot)
+
             item_select_widget = create_centered_checkbox(True)
             item_select_widget.checkbox.stateChanged.connect(
                 self.refresh_current_tab_footer
             )
+
             item1 = QTableWidgetItem(str(met_date))
-            item2 = QTableWidgetItem(f'{patient["last_name"]} {patient["first_name"]}')
+            item2 = QTableWidgetItem(
+                f'{patient["last_name"]} {patient["first_name"]}'
+            )
             item3 = QTableWidgetItem(str(patient["ipp"]))
             item4 = QTableWidgetItem(str(patient["task_display_focus"]))
             item5 = QTableWidgetItem(str(patient["task_status"]))
@@ -2993,9 +2846,6 @@ class MainWindow(QMainWindow):
             item10 = QTableWidgetItem(adress)
             item_energy = QTableWidgetItem(str(patient.get("energy") or ""))
 
-            # =========================
-            # NEW TOMO ITEMS
-            # =========================
             item_beam_on = QTableWidgetItem(
                 "" if tomo_beam_on is None else str(tomo_beam_on)
             )
@@ -3050,14 +2900,10 @@ class MainWindow(QMainWindow):
             table.setItem(row, 12, item_pdf)
             table.setItem(row, 13, item10)
             table.setItem(row, 14, item_energy)
-
-            # NEW COLUMNS
             table.setItem(row, 15, item_beam_on)
             table.setItem(row, 16, item_fraction)
 
         table.resizeColumnsToContents()
-
-        self.tabs.currentChanged.connect(self.on_tab_changed)
 
         layout.addWidget(table)
         layout.addWidget(footer_label)
@@ -3070,14 +2916,18 @@ class MainWindow(QMainWindow):
         widget.table = table
 
         return widget
+
+
 # =====================================================
 # LANCEMENT APPLICATION
 # =====================================================
-app = QApplication(sys.argv)
-app.setStyleSheet(APP_STYLESHEET)
-app.setFont(QFont("Segoe UI", 10))
+if __name__ == "__main__":
 
-window = MainWindow()
-window.show()
+    app = QApplication(sys.argv)
+    app.setStyleSheet(APP_STYLESHEET)
+    app.setFont(QFont("Segoe UI", 10))
 
-app.exec()
+    window = MainWindow()
+    window.show()
+
+    sys.exit(app.exec())
