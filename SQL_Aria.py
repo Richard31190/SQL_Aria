@@ -21,7 +21,7 @@ Remove-Item dist -Recurse -Force
 Remove-Item build -Recurse -Force
 Remove-Item CQ_Dashboard.spec -Force
 
-python -m PyInstaller SQL_Aria.py --clean --noconfirm --onedir --windowed --name CQ_Dashboard --add-data "ATT70966.env;."
+python -m PyInstaller SQL_Aria.py --clean --noconfirm --onedir --windowed --name CQ_Dashboard --icon "CQ_Dashboard.ico" --add-data "ATT70966.env;."
 """
 # =========================================================
 
