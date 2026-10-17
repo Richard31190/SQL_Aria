@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
+import time
 import traceback
 from datetime import datetime, timedelta
 from collections import defaultdict
 from sqlalchemy import create_engine, or_, func
-from sqlalchemy.orm import sessionmaker, joinedload, Session
+from sqlalchemy.orm import sessionmaker, Session
 from PySide6.QtCore import QThread, Signal
 
-# Import du modele ORM
 from models import Patients, Careplans, Tasks, Appointments, QueryLog
 
 from config import (
@@ -25,7 +25,8 @@ def get_last_database_update(session: Session):
 def load_today_patients_by_machine(session: Session):
     now = datetime.now()
     today_start, today_end = day_bounds(now)
-    appointments = session.query(Appointments).join(Appointments.patient).options(joinedload(Appointments.patient)).filter(
+    
+    appointments = session.query(Appointments).join(Appointments.patient).filter(
         Appointments.start_scheduled_period >= today_start,
         Appointments.start_scheduled_period < today_end,
     ).all()
@@ -33,7 +34,7 @@ def load_today_patients_by_machine(session: Session):
     machines = defaultdict(list)
     for appt in appointments:
         machine = machine_key_from_device(appt.device)
-        if not machine: continue
+        if not machine or not appt.patient: continue
 
         service_type = str(appt.service_type or "").lower()
         last_name = str(appt.patient.family_name_official or "").upper()
@@ -88,7 +89,7 @@ def load_machine_schedule(session: Session):
 def load_daily_qa(session: Session):
     now = datetime.now()
     today_start, today_end = day_bounds(now)
-    appointments = session.query(Appointments).options(joinedload(Appointments.patient)).filter(
+    appointments = session.query(Appointments).join(Appointments.patient).filter(
         or_(Appointments.service_type.ilike("%cq physique%"), (Appointments.service_type.ilike("%cq patient%") & Appointments.device.in_(TOMO_DEVICES))),
         ~Appointments.device.ilike("HALCYON%"),
         Appointments.start_scheduled_period >= today_start,
@@ -132,59 +133,140 @@ def load_cq_patient_ids_today(session: Session):
         ~func.lower(Appointments.status).in_(["cancelled", "fulfilled"]),
     ).all() if row[0]}
 
-def load_cq_ready_patients(session: Session, since: datetime):
-    return session.query(Patients).join(Patients.careplans).join(Careplans.tasks).filter(
-        or_(Tasks.display_focus.ilike("réalisation du cq%"), Tasks.display_focus.ilike("réalisation des cq%"), Tasks.display_focus.ilike("replanif%")),
+def load_cq_ready_patients_fast(session: Session, since: datetime):
+    # 1. On cherche directement les tâches éligibles
+    tasks = session.query(Tasks).filter(
+        or_(
+            Tasks.display_focus.ilike("réalisation du cq%"),
+            Tasks.display_focus.ilike("réalisation des cq%"),
+            Tasks.display_focus.ilike("replanif%")
+        ),
         Tasks.last_updated >= since,
-        Tasks.status.ilike("ready"),
-    ).options(joinedload(Patients.appointments), joinedload(Patients.careplans).joinedload(Careplans.tasks)).distinct().all()
+        Tasks.status.ilike("ready")
+    ).all()
 
-def load_cq_imminent_patients(session: Session, since: datetime):
-    candidates = session.query(Patients).join(Patients.careplans).join(Careplans.tasks).filter(
-        Tasks.last_updated >= since,
-        or_(Tasks.display_focus.ilike("validation médicale de la dosimétrie%"), Tasks.display_focus.ilike("finalisation du dossier%"))
-    ).options(joinedload(Patients.appointments), joinedload(Patients.careplans).joinedload(Careplans.tasks)).distinct().all()
+    if not tasks: return []
+
+    careplan_ids = {t.careplan_id for t in tasks if t.careplan_id}
+    careplans = session.query(Careplans).filter(Careplans.id.in_(careplan_ids)).all()
+    patient_ids = {cp.patient_id for cp in careplans if cp.patient_id}
+    patients = session.query(Patients).filter(Patients.id.in_(patient_ids)).all()
+    patient_dict = {p.id: p for p in patients}
+
+    # 2. On charge UNIQUEMENT les rendez-vous MET pour ces patients (évite 98% des RDV inutiles)
+    mets = session.query(Appointments).filter(
+        Appointments.patient_id.in_(patient_ids),
+        Appointments.service_type.ilike("MET%"),
+        ~func.lower(Appointments.status).in_(["cancelled"])
+    ).all()
+    
+    patient_mets = defaultdict(list)
+    for m in mets: patient_mets[m.patient_id].append(m)
+
+    # 3. Tâches de finalisation (physicien)
+    fin_tasks = session.query(Tasks).filter(
+        Tasks.careplan_id.in_(careplan_ids),
+        Tasks.display_focus.ilike("finalisation du dossier%")
+    ).all()
+    cp_physicists = {}
+    for ft in fin_tasks:
+        cp_physicists[ft.careplan_id] = ft.recipient or ft.recipient_id
 
     rows = []
-    for patient in candidates:
-        all_tasks = [t for cp in patient.careplans for t in cp.tasks]
-        val_tasks = [t for t in all_tasks if t.display_focus and t.display_focus.lower().startswith("validation médicale") and str(t.status or "").lower() in ["completed", "in-progress", "ready"] and t.last_updated >= since]
-        if not val_tasks: continue
-        val_date = max(val_tasks, key=lambda x: x.last_updated).last_updated
+    for cp in careplans:
+        p = patient_dict.get(cp.patient_id)
+        if not p: continue
+        
+        m_list = patient_mets.get(p.id, [])
+        met_start = max([m.start_scheduled_period for m in m_list], default=None)
+        physicist = cp_physicists.get(cp.id)
 
-        if not any(t.display_focus and t.display_focus.lower().startswith("finalisation") and str(t.status or "").lower() == "draft" for t in all_tasks): continue
-        
-        tdm_tasks = [t for t in all_tasks if t.display_focus and t.display_focus.lower().startswith("scanner")]
-        tdm_date = max(tdm_tasks, key=lambda x: x.last_updated).last_updated if tdm_tasks else None
-        
-        app_tasks = [t for t in all_tasks if t.display_focus and t.display_focus.lower().startswith("appeler patient")]
+        # Filtrer les tâches du careplan
+        cp_tasks = [t for t in tasks if t.careplan_id == cp.id]
+        for t in cp_tasks:
+            rows.append({
+                "patient_obj": p,
+                "ipp": p.ipp, "last_name": p.family_name_official, "first_name": p.given,
+                "physicist": physicist, "patient_id": p.id,
+                "task_display_focus": t.display_focus, "task_status": t.status, "task_note": t.note,
+                "met_start": met_start
+            })
+    return rows
+
+def load_cq_imminent_patients_fast(session: Session, since: datetime):
+    # Cherche les tâches de validation médicale récentes
+    val_tasks = session.query(Tasks).filter(
+        Tasks.last_updated >= since,
+        Tasks.display_focus.ilike("validation médicale de la dosimétrie%"),
+        func.lower(Tasks.status).in_(["completed", "in-progress", "ready"])
+    ).all()
+
+    if not val_tasks: return []
+
+    careplan_ids = {t.careplan_id for t in val_tasks if t.careplan_id}
+    careplans = session.query(Careplans).filter(Careplans.id.in_(careplan_ids)).all()
+    patient_ids = {cp.patient_id for cp in careplans if cp.patient_id}
+    patients = session.query(Patients).filter(Patients.id.in_(patient_ids)).all()
+    patient_map = {p.id: p for p in patients}
+
+    # Charger toutes les tâches associées à ces careplans d'un coup
+    all_related_tasks = session.query(Tasks).filter(Tasks.careplan_id.in_(careplan_ids)).all()
+    cp_tasks_map = defaultdict(list)
+    for t in all_related_tasks: cp_tasks_map[t.careplan_id].append(t)
+
+    # Charger uniquement les METs de ces patients
+    mets = session.query(Appointments).filter(
+        Appointments.patient_id.in_(patient_ids),
+        Appointments.service_type.ilike("MET%"),
+        ~func.lower(Appointments.status).in_(["cancelled"])
+    ).all()
+    patient_mets = defaultdict(list)
+    for m in mets: patient_mets[m.patient_id].append(m)
+
+    rows = []
+    for cp in careplans:
+        p = patient_map.get(cp.patient_id)
+        if not p: continue
+
+        c_tasks = cp_tasks_map.get(cp.id, [])
+        v_tasks = [t for t in c_tasks if t.display_focus and t.display_focus.lower().startswith("validation médicale") and t.last_updated >= since]
+        if not v_tasks: continue
+        val_date = max([t.last_updated for t in v_tasks if t.last_updated], default=None)
+
+        if not any(t.display_focus and t.display_focus.lower().startswith("finalisation") and str(t.status or "").lower() == "draft" for t in c_tasks):
+            continue
+
+        tdm_tasks = [t for t in c_tasks if t.display_focus and t.display_focus.lower().startswith("scanner")]
+        tdm_date = max([t.last_updated for t in tdm_tasks if t.last_updated], default=None)
+
+        app_tasks = [t for t in c_tasks if t.display_focus and t.display_focus.lower().startswith("appeler patient")]
         appel_status = max(app_tasks, key=lambda x: x.last_updated).status if app_tasks else None
 
-        mets = [a for a in patient.appointments if a.service_type and a.service_type.upper().startswith("MET") and a.start_scheduled_period and a.start_scheduled_period > val_date and str(a.status or "").lower() != "cancelled"]
-        met_start = max(mets, key=lambda x: x.start_scheduled_period).start_scheduled_period if mets else None
+        p_mets = [m for m in patient_mets.get(p.id, []) if m.start_scheduled_period and m.start_scheduled_period > val_date]
+        met_start = max([m.start_scheduled_period for m in p_mets], default=None)
 
-        dosi_task = next((t.display_focus for t in all_tasks if t.display_focus and "réalisation dosi" in t.display_focus.lower()), None)
-        workflow = patient.careplans[-1].title if patient.careplans else None
+        dosi_task = next((t.display_focus for t in c_tasks if t.display_focus and "réalisation dosi" in t.display_focus.lower()), None)
 
         rows.append({
-            "ipp": patient.ipp, "last_name": patient.family_name_official, "first_name": patient.given,
-            "tdm_date": tdm_date, "realisation_dosi_task": dosi_task, "Workflow": workflow,
+            "ipp": p.ipp, "last_name": p.family_name_official, "first_name": p.given,
+            "tdm_date": tdm_date, "realisation_dosi_task": dosi_task, "Workflow": cp.title,
             "appel_patient_status": appel_status, "validation_date": val_date, "met_start": met_start, "va_tomber": bool(met_start),
         })
     return rows
 
 def build_dashboard_data() -> DashboardData:
+    t0 = time.time()
     since = datetime.now() - timedelta(days=LOOKBACK_DAYS)
-    try:
-        with engine.connect(): log("Connexion DB SQL OK")
-    except Exception: raise
-
+    
     session = SessionLocal()
     try:
+        t_start = time.time()
         cq_ids_today = load_cq_patient_ids_today(session)
-        ready = load_cq_ready_patients(session, since)
-        imminent = load_cq_imminent_patients(session, since)
+        ready_rows = load_cq_ready_patients_fast(session, since)
+        imminent = load_cq_imminent_patients_fast(session, since)
+        t_cq = time.time() - t_start
 
+        # Imminent Split
         counts = defaultdict(int)
         details = {k: [] for k in WAITING_KEYS}
         for r in imminent:
@@ -194,22 +276,9 @@ def build_dashboard_data() -> DashboardData:
             details[m].append(r)
 
         cq_rows = []
-        for p in ready:
-            mets = [a for a in p.appointments if a.service_type and a.service_type.upper().startswith("MET") and a.start_scheduled_period and str(a.status or "").lower() != "cancelled"]
-            met_appt = max(mets, key=lambda x: x.start_scheduled_period) if mets else None
-            fin = [t for cp in p.careplans for t in cp.tasks if t.display_focus and t.display_focus.lower().startswith("finalisation")]
-            physicist = (max(fin, key=lambda x: x.last_updated or datetime.min).recipient or max(fin, key=lambda x: x.last_updated or datetime.min).recipient_id) if fin else None
-
-            for cp in p.careplans:
-                for t in cp.tasks:
-                    focus = (t.display_focus or "").lower()
-                    if (focus.startswith("réalisation du cq") or focus.startswith("réalisation des cq") or focus.startswith("replanif")) and "cancelled" not in str(t.status or "").lower():
-                        cq_rows.append({
-                            "ipp": p.ipp, "last_name": p.family_name_official, "first_name": p.given, "physicist": physicist,
-                            "Timeplanner": p.id in cq_ids_today, "patient_id": p.id,
-                            "task_display_focus": t.display_focus, "task_status": t.status, "task_note": t.note,
-                            "met_start": met_appt.start_scheduled_period if met_appt else None,
-                        })
+        for r in ready_rows:
+            r["Timeplanner"] = r["patient_id"] in cq_ids_today
+            cq_rows.append(r)
         
         cq_rows = clean_cq_rows(cq_rows)
         nova, tomo2, tomo4, tomo7 = [], [], [], []
@@ -220,12 +289,18 @@ def build_dashboard_data() -> DashboardData:
             elif "tomo 7" in f: tomo7.append(r)
             elif "ruby" in f or "octa" in f: nova.append(r)
 
+        t_planning_start = time.time()
         machines, countdown, remaining = load_today_patients_by_machine(session)
+        qa = load_daily_qa(session)
+        sched = load_machine_schedule(session)
+        t_planning = time.time() - t_planning_start
+
+        log(f"[BENCH SQL] Requetes CQ : {t_cq:.2f}s | Requetes Planning : {t_planning:.2f}s | Total SQL : {time.time()-t0:.2f}s")
 
         return DashboardData(
             nova=sort_by_met_start(nova), tomo2=sort_by_met_start(tomo2), tomo4=sort_by_met_start(tomo4), tomo7=sort_by_met_start(tomo7),
             waiting_count=dict(counts), waiting_details=details,
-            qa=load_daily_qa(session), machine_schedule=load_machine_schedule(session),
+            qa=qa, machine_schedule=sched,
             machines=machines, countdown=countdown, remaining_today=remaining,
             last_db_update=get_last_database_update(session),
         )
