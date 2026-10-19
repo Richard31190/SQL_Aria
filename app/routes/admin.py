@@ -57,9 +57,7 @@ def settings():
         # --- Config generale ---
         if action == 'save_settings':
             form_fields = [
-                'aria_db_host', 'aria_db_user', 'aria_db_password', 'aria_db_name',
-                'outlook_email', 'outlook_server', 'outlook_domain',
-                'radmachine_token'
+                'aria_db_host', 'aria_db_user', 'aria_db_password', 'aria_db_name'         
             ]
             for field in form_fields:
                 val = request.form.get(field, '').strip()

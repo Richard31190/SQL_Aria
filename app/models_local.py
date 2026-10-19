@@ -27,11 +27,7 @@ DEFAULT_SETTINGS = {
     'aria_db_host': 'localhost',
     'aria_db_user': 'aria_user',
     'aria_db_password': '',
-    'aria_db_name': 'aria_db',
-    'outlook_email': '',
-    'outlook_server': '',
-    'outlook_domain': '',
-    'radmachine_token': '',
+    'aria_db_name': 'aria_db'
 }
 
 # Machines proposees au tout premier demarrage (modifiables ensuite)
