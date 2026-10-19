@@ -37,14 +37,8 @@ EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "instance", "instance", "{4A401DC1-B6E7-4064-AF1F-E7457BE5B4A7}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "css", "css", "{C98E3C5A-3CEF-412E-871C-34C1D603F53A}"
-	ProjectSection(SolutionItems) = preProject
-		app\static\css\style.css = app\static\css\style.css
-	EndProjectSection
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "js", "js", "{D490B18E-944B-485C-9087-531FB93424ED}"
-	ProjectSection(SolutionItems) = preProject
-		app\static\js\main.js = app\static\js\main.js
-	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
