@@ -7,136 +7,170 @@
     <div class="flex flex-col items-center justify-center py-20 text-slate-500">
         <i class="fa-solid fa-triangle-exclamation text-4xl text-amber-500 mb-4"></i>
         <h3 class="text-xl font-bold text-slate-700">Aucune machine active</h3>
-        <p class="text-sm mt-2">Allez dans l'Administration pour configurer et activer vos machines.</p>
+        <p class="text-sm mt-2">Configurez vos machines dans Administration (chemin DICOM + device IDs).</p>
     </div>
     {% else %}
 
-    <!-- BANDEAU DES MACHINES (Onglets) -->
-    <div class="flex space-x-2 overflow-x-auto pb-4 border-b border-slate-200 hide-scrollbar" id="machine-tabs">
+    <!-- Onglets machines -->
+    <div class="flex space-x-2 overflow-x-auto pb-4 border-b border-slate-200" id="machine-tabs">
         {% for m in machines %}
         <button onclick="selectMachine('{{ m.id }}')" id="tab-{{ m.id }}"
                 class="machine-tab flex items-center gap-2 px-5 py-3 rounded-xl border font-semibold text-sm transition-all whitespace-nowrap
                        {% if loop.first %}bg-blue-600 text-white border-blue-600 shadow-md{% else %}bg-white text-slate-600 border-slate-200 hover:bg-slate-50{% endif %}">
-            <i class="fa-solid fa-server"></i> {{ m.label }}
+            <i class="fa-solid fa-server"></i>
+            <span>{{ m.label }}</span>
+            <span id="badge-{{ m.id }}" class="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-white/20 hidden">0</span>
         </button>
         {% endfor %}
     </div>
 
-    <!-- CONTENU DES MACHINES -->
     <div class="flex-1 overflow-y-auto pt-6" id="machine-contents">
         {% for m in machines %}
         <div id="content-{{ m.id }}" class="machine-content {% if not loop.first %}hidden{% endif %}">
-
             <div class="flex items-center justify-between mb-4">
-                <h3 class="text-lg font-bold text-slate-800"><i class="fa-solid fa-list-check mr-2 text-blue-500"></i>Contrôles Qualité à réaliser</h3>
-                <button onclick="loadMachineData('{{ m.id }}')" class="text-xs font-semibold text-slate-500 hover:text-blue-600 transition flex items-center gap-1">
+                <div>
+                    <h3 class="text-lg font-bold text-slate-800">
+                        <i class="fa-solid fa-list-check mr-2 text-blue-500"></i>
+                        CQ patients - {{ m.label }}
+                    </h3>
+                    <p class="text-xs text-slate-500 mt-1 font-mono">{{ m.dicom_path or 'Aucun chemin DICOM configure' }}</p>
+                </div>
+                <button onclick="loadMachineData('{{ m.id }}')"
+                        class="text-xs font-semibold text-slate-500 hover:text-blue-600 transition flex items-center gap-1 px-3 py-2 rounded-lg border border-slate-200 bg-white">
                     <i class="fa-solid fa-arrows-rotate"></i> Actualiser
                 </button>
             </div>
 
-            <!-- Tableau -->
             <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                <table class="w-full text-left border-collapse">
-                    <thead>
-                        <tr class="bg-slate-50 border-b border-slate-200 text-xs uppercase text-slate-500">
-                            <th class="px-4 py-3 font-semibold">Patient</th>
-                            <th class="px-4 py-3 font-semibold">ID</th>
-                            <th class="px-4 py-3 font-semibold">Plan de Traitement</th>
-                            <th class="px-4 py-3 font-semibold">Statut ARIA</th>
-                            <th class="px-4 py-3 font-semibold text-center">Scan NAS (DICOM/PDF)</th>
-                        </tr>
-                    </thead>
-                    <tbody id="table-body-{{ m.id }}" class="text-sm divide-y divide-slate-100">
-                        <!-- Le contenu sera injecté ici par JavaScript -->
-                        <tr>
-                            <td colspan="5" class="px-4 py-10 text-center text-slate-500">
-                                <i class="fa-solid fa-circle-notch fa-spin text-2xl text-blue-500 mb-3"></i>
-                                <p>Recherche dans ARIA et sur le réseau en cours...</p>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse min-w-[900px]">
+                        <thead>
+                            <tr class="bg-slate-50 border-b border-slate-200 text-[11px] uppercase tracking-wide text-slate-500">
+                                <th class="px-4 py-3 font-semibold">Patient</th>
+                                <th class="px-4 py-3 font-semibold">IPP</th>
+                                <th class="px-4 py-3 font-semibold">Tache CQ</th>
+                                <th class="px-4 py-3 font-semibold">Physicien</th>
+                                <th class="px-4 py-3 font-semibold">MET</th>
+                                <th class="px-4 py-3 font-semibold text-center">Planning</th>
+                                <th class="px-4 py-3 font-semibold text-center">NAS</th>
+                                <th class="px-4 py-3 font-semibold text-center">Energie</th>
+                            </tr>
+                        </thead>
+                        <tbody id="table-body-{{ m.id }}" class="text-sm divide-y divide-slate-100">
+                            <tr>
+                                <td colspan="8" class="px-4 py-10 text-center text-slate-500">
+                                    <i class="fa-solid fa-circle-notch fa-spin text-2xl text-blue-500 mb-3"></i>
+                                    <p>Interrogation ARIA + scan NAS...</p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
-
         </div>
         {% endfor %}
     </div>
     {% endif %}
-
 </div>
 {% endblock %}
 
 {% block scripts_extra %}
 <script>
-    // Gestion des onglets
     function selectMachine(machineId) {
-        // Cacher tous les contenus
         document.querySelectorAll('.machine-content').forEach(el => el.classList.add('hidden'));
-        // Afficher le bon contenu
         document.getElementById('content-' + machineId).classList.remove('hidden');
 
-        // Réinitialiser les styles des onglets
         document.querySelectorAll('.machine-tab').forEach(el => {
             el.className = 'machine-tab flex items-center gap-2 px-5 py-3 rounded-xl border font-semibold text-sm transition-all whitespace-nowrap bg-white text-slate-600 border-slate-200 hover:bg-slate-50';
         });
-        // Appliquer le style actif
         const activeTab = document.getElementById('tab-' + machineId);
         activeTab.className = 'machine-tab flex items-center gap-2 px-5 py-3 rounded-xl border font-semibold text-sm transition-all whitespace-nowrap bg-blue-600 text-white border-blue-600 shadow-md';
     }
 
-    // Chargement AJAX des donnees CQ
+    function nasBadge(status, label) {
+        if (status === 'ok')
+            return `<span class="px-2 py-1 rounded-md bg-emerald-100 text-emerald-700 text-xs font-bold"><i class="fa-solid fa-check mr-1"></i>${label}</span>`;
+        if (status === 'partial')
+            return `<span class="px-2 py-1 rounded-md bg-amber-100 text-amber-700 text-xs font-bold"><i class="fa-solid fa-file-waveform mr-1"></i>${label}</span>`;
+        if (status === 'folder')
+            return `<span class="px-2 py-1 rounded-md bg-slate-100 text-slate-600 text-xs font-bold"><i class="fa-solid fa-folder mr-1"></i>${label}</span>`;
+        return `<span class="px-2 py-1 rounded-md bg-red-100 text-red-700 text-xs font-bold"><i class="fa-solid fa-xmark mr-1"></i>${label}</span>`;
+    }
+
+    function urgencyRowClass(u) {
+        if (u === 'late') return 'border-l-4 border-l-red-500 bg-red-50/40';
+        if (u === 'urgent') return 'border-l-4 border-l-amber-500 bg-amber-50/30';
+        if (u === 'today') return 'border-l-4 border-l-blue-500 bg-blue-50/30';
+        return '';
+    }
+
     function loadMachineData(machineId) {
         const tbody = document.getElementById('table-body-' + machineId);
+        const badge = document.getElementById('badge-' + machineId);
 
-        // Afficher le spinner
         tbody.innerHTML = `
-            <tr>
-                <td colspan="5" class="px-4 py-10 text-center text-slate-500">
-                    <i class="fa-solid fa-circle-notch fa-spin text-2xl text-blue-500 mb-3"></i>
-                    <p>Recherche dans ARIA et sur le réseau en cours...</p>
-                </td>
-            </tr>`;
+        <tr>
+            <td colspan="8" class="px-4 py-10 text-center text-slate-500">
+                <i class="fa-solid fa-circle-notch fa-spin text-2xl text-blue-500 mb-3"></i>
+                <p>Interrogation ARIA + scan NAS...</p>
+            </td>
+        </tr>`;
 
-        // Appel au serveur Flask
         fetch('/api/cq_data/' + machineId)
-            .then(response => response.json())
+            .then(r => r.json())
             .then(data => {
-                tbody.innerHTML = '';
-                if(data.data.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="5" class="px-4 py-6 text-center text-emerald-600 font-semibold"><i class="fa-solid fa-check-circle mr-1"></i>Aucun CQ en attente</td></tr>`;
+                if (data.status === 'error') {
+                    tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-6 text-center text-red-600">
+                    <i class="fa-solid fa-triangle-exclamation mr-1"></i>${data.message || 'Erreur'}
+                </td></tr>`;
                     return;
                 }
 
-                data.data.forEach(row => {
-                    // Logique de couleur (Urgence + NAS)
-                    let urgencyClass = row.urgency === 'urgent' ? 'border-l-4 border-l-red-500 bg-red-50/30' : '';
+                const rows = data.data || [];
+                if (badge) {
+                    if (rows.length > 0) {
+                        badge.textContent = rows.length;
+                        badge.classList.remove('hidden');
+                    } else {
+                        badge.classList.add('hidden');
+                    }
+                }
 
-                    let nasBadge = row.status_nas === 'Trouve'
-                        ? `<span class="px-2 py-1 rounded-md bg-emerald-100 text-emerald-700 text-xs font-bold"><i class="fa-solid fa-file-waveform mr-1"></i>Présent</span>`
-                        : `<span class="px-2 py-1 rounded-md bg-slate-100 text-slate-500 text-xs font-bold"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Manquant</span>`;
+                if (rows.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-6 text-center text-emerald-600 font-semibold">
+                    <i class="fa-solid fa-check-circle mr-1"></i>Aucun CQ en attente
+                </td></tr>`;
+                    return;
+                }
 
-                    tbody.innerHTML += `
-                        <tr class="hover:bg-slate-50 transition ${urgencyClass}">
-                            <td class="px-4 py-3 font-bold text-slate-700">${row.patient_name}</td>
-                            <td class="px-4 py-3 text-slate-500">${row.patient_id}</td>
-                            <td class="px-4 py-3 font-semibold text-blue-700">${row.plan_name}</td>
-                            <td class="px-4 py-3"><span class="px-2 py-1 rounded bg-amber-100 text-amber-700 text-xs font-bold">À réaliser</span></td>
-                            <td class="px-4 py-3 text-center">${nasBadge}</td>
-                        </tr>
-                    `;
-                });
+                tbody.innerHTML = rows.map(row => `
+                <tr class="hover:bg-slate-50 transition ${urgencyRowClass(row.urgency)}">
+                    <td class="px-4 py-3 font-bold text-slate-700">${row.patient_name || ''}</td>
+                    <td class="px-4 py-3 text-slate-500 font-mono text-xs">${row.ipp || ''}</td>
+                    <td class="px-4 py-3 text-blue-700 font-medium text-xs">${row.plan_name || ''}</td>
+                    <td class="px-4 py-3 text-slate-600 text-xs">${row.physicist || '-'}</td>
+                    <td class="px-4 py-3 text-slate-600 text-xs whitespace-nowrap">${row.met_start || '-'}</td>
+                    <td class="px-4 py-3 text-center">
+                        ${row.timeplanner
+                        ? '<span class="px-2 py-1 rounded bg-blue-100 text-blue-700 text-xs font-bold">Aujourd\'hui</span>'
+                        : '<span class="text-slate-400 text-xs">-</span>'}
+                    </td>
+                    <td class="px-4 py-3 text-center">${nasBadge(row.nas_status, row.nas_label)}</td>
+                    <td class="px-4 py-3 text-center text-xs font-mono text-slate-600">${row.energy || '-'}</td>
+                </tr>
+            `).join('');
             })
-            .catch(err => {
-                tbody.innerHTML = `<tr><td colspan="5" class="px-4 py-6 text-center text-red-500"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Erreur de connexion</td></tr>`;
+            .catch(() => {
+                tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-6 text-center text-red-500">
+                <i class="fa-solid fa-triangle-exclamation mr-1"></i>Erreur reseau
+            </td></tr>`;
             });
     }
 
-    // Charger les donnees de toutes les machines au demarrage
     document.addEventListener('DOMContentLoaded', () => {
-        const tabs = document.querySelectorAll('.machine-content');
-        tabs.forEach(tab => {
-            const machineId = tab.id.replace('content-', '');
-            loadMachineData(machineId);
+        document.querySelectorAll('.machine-content').forEach(tab => {
+            const id = tab.id.replace('content-', '');
+            loadMachineData(id);
         });
     });
 </script>

@@ -2,3 +2,6 @@ flask==3.0.2
 sqlalchemy==2.0.49
 werkzeug==3.0.1
 waitress==3.0.0
+pymysql==1.1.3
+pydicom==3.0.1
+python-dotenv==1.2.2

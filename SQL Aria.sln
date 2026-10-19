@@ -20,6 +20,7 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "routes", "routes", "{55F6AA
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "app", "app", "{EA3FFE4A-BD0C-42CB-95AE-CCECC0A47057}"
 	ProjectSection(SolutionItems) = preProject
+		app\models_aria.py = app\models_aria.py
 		app\models_local.py = app\models_local.py
 		app\__init__.py = app\__init__.py
 	EndProjectSection
@@ -39,6 +40,14 @@ EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "css", "css", "{C98E3C5A-3CEF-412E-871C-34C1D603F53A}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "js", "js", "{D490B18E-944B-485C-9087-531FB93424ED}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "services", "services", "{C528C8E5-8973-4BC7-A40D-BD7D4186619F}"
+	ProjectSection(SolutionItems) = preProject
+		app\services\aria_service.py = app\services\aria_service.py
+		app\services\config_utils.py = app\services\config_utils.py
+		app\services\network_service.py = app\services\network_service.py
+		app\services\__init__.py = app\services\__init__.py
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -60,6 +69,7 @@ Global
 		{4A401DC1-B6E7-4064-AF1F-E7457BE5B4A7} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
 		{C98E3C5A-3CEF-412E-871C-34C1D603F53A} = {55A9D341-B704-41B6-8B77-8ED878C1EDC4}
 		{D490B18E-944B-485C-9087-531FB93424ED} = {55A9D341-B704-41B6-8B77-8ED878C1EDC4}
+		{C528C8E5-8973-4BC7-A40D-BD7D4186619F} = {EA3FFE4A-BD0C-42CB-95AE-CCECC0A47057}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {5B5C9809-1E23-4BDA-937F-B0C50D8B384B}
