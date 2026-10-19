@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <!-- Formulaire principal de Configuration -->
+    <div class="col-lg-8">
+        <form method="POST">
+            <input type="hidden" name="action" value="save_settings">
+
+            <!-- Carte 1: BDD ARIA -->
+            <div class="card shadow-sm border-0 mb-4">
+                <div class="card-header bg-dark text-white border-bottom border-secondary d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-database-fill text-primary me-2"></i> Connexion ARIA (MySQL/Oracle)</h5>
+                    <button type="submit" name="action" value="test_aria" class="btn btn-sm btn-outline-info">
+                        <i class="bi bi-lightning-fill me-1"></i> Tester la connexion
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Hôte / Serveur BDD</label>
+                            <input type="text" class="form-control" name="aria_db_host" value="{{ cfg.aria_db_host }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Nom de la Base</label>
+                            <input type="text" class="form-control" name="aria_db_name" value="{{ cfg.aria_db_name }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Utilisateur</label>
+                            <input type="text" class="form-control" name="aria_db_user" value="{{ cfg.aria_db_user }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Mot de passe</label>
+                            <input type="password" class="form-control" name="aria_db_password" value="{{ cfg.aria_db_password }}">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Carte 2: Chemins réseau NAS CQ Patients -->
+            <div class="card shadow-sm border-0 mb-4">
+                <div class="card-header bg-dark text-white border-bottom border-secondary">
+                    <h5 class="mb-0"><i class="bi bi-folder-symlink-fill text-warning me-2"></i> Chemins Réseau NAS (Recherche CQ Patients)</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Tomo2 (Delta4 / DICOM)</label>
+                            <input type="text" class="form-control" name="nas_tomo2" value="{{ cfg.nas_tomo2 }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Tomo4 (Delta4 / DICOM)</label>
+                            <input type="text" class="form-control" name="nas_tomo4" value="{{ cfg.nas_tomo4 }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Tomo7 / RADI7</label>
+                            <input type="text" class="form-control" name="nas_tomo7" value="{{ cfg.nas_tomo7 }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Nova Stereo EC</label>
+                            <input type="text" class="form-control" name="nas_nova_ec" value="{{ cfg.nas_nova_ec }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Nova Hyperarc</label>
+                            <input type="text" class="form-control" name="nas_nova_hyperarc" value="{{ cfg.nas_nova_hyperarc }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Nova RA</label>
+                            <input type="text" class="form-control" name="nas_nova_ra" value="{{ cfg.nas_nova_ra }}">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Carte 3: Exchange & RadMachine -->
+            <div class="card shadow-sm border-0 mb-4">
+                <div class="card-header bg-dark text-white border-bottom border-secondary">
+                    <h5 class="mb-0"><i class="bi bi-diagram-3-fill text-info me-2"></i> Services Externes</h5>
+                </div>
+                <div class="card-body">
+                    <h6 class="text-primary fw-bold"><i class="bi bi-envelope-at me-1"></i> Connexion Outlook / Exchange</h6>
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-4">
+                            <label class="form-label">Adresse Email</label>
+                            <input type="email" class="form-control" name="outlook_email" value="{{ cfg.outlook_email }}">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Serveur Exchange</label>
+                            <input type="text" class="form-control" name="outlook_server" value="{{ cfg.outlook_server }}">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Domaine</label>
+                            <input type="text" class="form-control" name="outlook_domain" value="{{ cfg.outlook_domain }}">
+                        </div>
+                    </div>
+
+                    <h6 class="text-purple fw-bold" style="color: #9b51e0;"><i class="bi bi-cpu-fill me-1"></i> Connexion RadMachine API (Service Events)</h6>
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <label class="form-label">Token API RadMachine</label>
+                            <input type="text" class="form-control" name="radmachine_token" value="{{ cfg.radmachine_token }}" placeholder="Insérer le Token d'API...">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="text-end mb-5">
+                <button type="submit" class="btn btn-success btn-lg px-5">
+                    <i class="bi bi-check-lg me-2"></i>Enregistrer toute la configuration
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Colonne de Droite: Sécurité & Sauvegarde -->
+    <div class="col-lg-4">
+        <!-- Carte Sécurité -->
+        <div class="card shadow-sm border-0 mb-4">
+            <div class="card-header bg-dark text-white border-bottom border-secondary">
+                <h5 class="mb-0"><i class="bi bi-shield-lock-fill text-danger me-2"></i> Mot de passe Administrateur</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST">
+                    <input type="hidden" name="action" value="change_password">
+                    <div class="mb-3">
+                        <label class="form-label">Ancien mot de passe</label>
+                        <input type="password" class="form-control" name="old_password" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Nouveau mot de passe</label>
+                        <input type="password" class="form-control" name="new_password" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Confirmer nouveau mot de passe</label>
+                        <input type="password" class="form-control" name="confirm_password" required>
+                    </div>
+                    <button type="submit" class="btn btn-outline-danger w-100">
+                        <i class="bi bi-key-fill me-2"></i>Modifier le mot de passe
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Carte Export / Import ZIP -->
+        <div class="card shadow-sm border-0 mb-4">
+            <div class="card-header bg-dark text-white border-bottom border-secondary">
+                <h5 class="mb-0"><i class="bi bi-file-zip-fill text-success me-2"></i> Sauvegarde &amp; Restauration</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">Téléchargez une sauvegarde complète (ZIP) de votre base de réglages pour la migrer ou la conserver.</p>
+
+                <a href="{{ url_for('admin.export_config') }}" class="btn btn-outline-primary w-100 mb-4">
+                    <i class="bi bi-download me-2"></i>Exporter la sauvegarde (ZIP)
+                </a>
+
+                <hr class="border-secondary">
+
+                <h6>Restaurer une sauvegarde</h6>
+                <form method="POST" action="{{ url_for('admin.import_config') }}" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <input type="file" class="form-control" name="backup_zip" accept=".zip" required>
+                    </div>
+                    <button type="submit" class="btn btn-outline-warning w-100">
+                        <i class="bi bi-upload me-2"></i>Restaurer le fichier ZIP
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,4 @@
+flask==3.0.2
+sqlalchemy==2.0.49
+werkzeug==3.0.1
+waitress==3.0.0

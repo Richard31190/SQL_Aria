@@ -1,8 +1,3 @@
-# ----------------------
-# pour générer le .exe:
-# python -m PyInstaller main.py --clean --noconfirm --onedir --windowed --name CQ_Dashboard --icon "CQ_Dashboard.ico" --add-data "ATT70966.env;."
-# ----------------------
-
 import sys
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QFont
