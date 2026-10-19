@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from sqlalchemy import create_engine, func, or_
 from sqlalchemy.orm import sessionmaker
-from app.models_local import Setting, CQTab, CQSource, ScanCache, db_local
+from app.models_local import Setting, CQTab, ScanCache, db_local
 from app.models_aria import Patients, Careplans, Tasks, Appointments
 
 # ============================================================
@@ -381,58 +381,87 @@ def build_dashboard_data(tab_name=None):
 # Scan réseau NAS (inchangé)
 # ============================================================
 def perform_network_scan():
-    dicom_sources = CQSource.query.filter_by(source_type='DICOM', active=True).all()
-    pdf_sources = CQSource.query.filter_by(source_type='PDF', active=True).all()
+    """Scanne tous les dossiers réseau définis dans chaque onglet (DICOM & PDF dans les mêmes dossiers)."""
+    tabs = CQTab.query.all()
+    all_paths = set()
+    for tab in tabs:
+        for p in tab.get_network_paths():
+            if p:
+                all_paths.add(p.strip())
 
     found_count = 0
     scandidos_sig = Setting.get_val('SCANDIDOS_SIGNATURE', '114358')
 
-    for src in dicom_sources:
-        if not os.path.exists(src.path):
+    for path in all_paths:
+        if not os.path.exists(path):
             continue
-        for root, dirs, files in os.walk(src.path):
-            for f in files:
-                if not (f.endswith('.xml') or f.endswith('.json')):
-                    continue
-                file_path = os.path.join(root, f)
-                try:
-                    patient_id = None
-                    if f.endswith('.xml'):
-                        root_xml = ET.parse(file_path).getroot()
-                        if scandidos_sig.lower() in ET.tostring(root_xml, encoding='utf-8').decode('utf-8').lower():
-                            elem = root_xml.find('.//PatientID')
-                            if elem is not None:
-                                patient_id = elem.text
-                    else:
-                        with open(file_path, 'r', encoding='utf-8') as jf:
-                            data = json.load(jf)
-                        if scandidos_sig.lower() in json.dumps(data).lower():
-                            patient_id = data.get('PatientID') or data.get('patient_id')
+        try:
+            for root, dirs, files in os.walk(path):
+                # Limite de profondeur à 3 sous-dossiers (comme dans l'ancien programme)
+                depth = root[len(path):].count(os.sep)
+                if depth >= 3:
+                    dirs.clear()
 
-                    if patient_id and not ScanCache.query.filter_by(patient_id=patient_id, file_type='DICOM').first():
-                        db_local.session.add(ScanCache(
-                            patient_id=patient_id, file_type='DICOM', file_name=f, file_path=file_path,
-                            last_modified=datetime.fromtimestamp(os.path.getmtime(file_path))
-                        ))
-                        found_count += 1
-                except Exception:
-                    continue
+                for f in files:
+                    file_path = os.path.join(root, f)
+                    lower_f = f.lower()
 
-    for src in pdf_sources:
-        if not os.path.exists(src.path):
-            continue
-        for root, dirs, files in os.walk(src.path):
-            for f in files:
-                if not f.endswith('.pdf'):
-                    continue
-                file_path = os.path.join(root, f)
-                patient_id = f.split('_')[0] if '_' in f else os.path.splitext(f)[0]
-                if not ScanCache.query.filter_by(patient_id=patient_id, file_type='PDF').first():
-                    db_local.session.add(ScanCache(
-                        patient_id=patient_id, file_type='PDF', file_name=f, file_path=file_path,
-                        last_modified=datetime.fromtimestamp(os.path.getmtime(file_path))
-                    ))
-                    found_count += 1
+                    # 1. RAPPORTS PDF
+                    if lower_f.endswith('.pdf'):
+                        patient_id = f.split('_')[0] if '_' in f else os.path.splitext(f)[0]
+                        patient_id = patient_id.strip()
+                        if patient_id and not ScanCache.query.filter_by(patient_id=patient_id, file_type='PDF').first():
+                            db_local.session.add(ScanCache(
+                                patient_id=patient_id,
+                                file_type='PDF',
+                                file_name=f,
+                                file_path=file_path,
+                                last_modified=datetime.fromtimestamp(os.path.getmtime(file_path))
+                            ))
+                            found_count += 1
+
+                    # 2. FICHIERS DICOM / SCANDIDOS / XML / JSON
+                    elif lower_f.endswith('.dcm') or lower_f.endswith('.xml') or lower_f.endswith('.json') or ('.' in f and f.replace('.', '').isdigit()):
+                        try:
+                            patient_id = None
+                            if lower_f.endswith('.dcm'):
+                                # L'IPP est souvent le nom du dossier parent ou le préfixe
+                                parent_name = os.path.basename(root)
+                                patient_id = parent_name if parent_name and any(c.isdigit() for c in parent_name) else f.split('_')[0]
+                            elif lower_f.endswith('.xml'):
+                                tree = ET.parse(file_path)
+                                root_xml = tree.getroot()
+                                xml_str = ET.tostring(root_xml, encoding='utf-8').decode('utf-8', errors='ignore')
+                                if scandidos_sig.lower() in xml_str.lower():
+                                    elem = root_xml.find('.//PatientID')
+                                    if elem is not None and elem.text:
+                                        patient_id = elem.text.strip()
+                            elif lower_f.endswith('.json'):
+                                with open(file_path, 'r', encoding='utf-8', errors='ignore') as jf:
+                                    data = json.load(jf)
+                                    if scandidos_sig.lower() in json.dumps(data).lower():
+                                        patient_id = data.get('PatientID') or data.get('patient_id')
+                            else:
+                                # Scandidos brut sans extension : recherche dans le dossier parent
+                                parent_name = os.path.basename(root)
+                                if parent_name and any(c.isdigit() for c in parent_name):
+                                    patient_id = parent_name
+
+                            if patient_id:
+                                patient_id = str(patient_id).strip()
+                                if not ScanCache.query.filter_by(patient_id=patient_id, file_type='DICOM').first():
+                                    db_local.session.add(ScanCache(
+                                        patient_id=patient_id,
+                                        file_type='DICOM',
+                                        file_name=f,
+                                        file_path=file_path,
+                                        last_modified=datetime.fromtimestamp(os.path.getmtime(file_path))
+                                    ))
+                                    found_count += 1
+                        except Exception:
+                            continue
+        except Exception as e:
+            print(f"[SCAN] Erreur scan {path}: {e}")
 
     db_local.session.commit()
     return found_count

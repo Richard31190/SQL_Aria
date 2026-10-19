@@ -35,24 +35,42 @@ class CQTab(db_local.Model):
     name = db_local.Column(db_local.String(50), nullable=False, unique=True)
     label = db_local.Column(db_local.String(100), nullable=False)
     display_order = db_local.Column(db_local.Integer, default=0)
-    machines_json = db_local.Column(db_local.Text, default='[]')
+    machines_json = db_local.Column(db_local.Text, default='{}')
+
+    def _get_data(self):
+        try:
+            raw = json.loads(self.machines_json or '{}')
+            if isinstance(raw, list):
+                return {"machines": raw, "network_paths": []}
+            return {
+                "machines": raw.get("machines", []),
+                "network_paths": raw.get("network_paths", [])
+            }
+        except Exception:
+            return {"machines": [], "network_paths": []}
 
     def get_machines(self):
-        try:
-            return json.loads(self.machines_json or '[]')
-        except Exception:
-            return []
+        return self._get_data().get("machines", [])
 
-    def set_machines(self, machine_list):
-        self.machines_json = json.dumps(machine_list)
+    def get_network_paths(self):
+        return self._get_data().get("network_paths", [])
+
+    def set_config(self, machines, network_paths):
+        self.machines_json = json.dumps({
+            "machines": machines or [],
+            "network_paths": network_paths or []
+        })
 
     def to_dict(self):
+        d = self._get_data()
         return {
             'id': self.id,
             'name': self.name,
             'label': self.label,
             'display_order': self.display_order,
-            'machines': self.get_machines()
+            'machines': d["machines"],
+            'network_paths': d["network_paths"],
+            'network_paths_csv': ', '.join(d["network_paths"])
         }
 
 class CQMachine(db_local.Model):
@@ -82,24 +100,6 @@ class CQMachine(db_local.Model):
             'duration_rules': self.get_duration_rules()
         }
 
-class CQSource(db_local.Model):
-    __tablename__ = 'cq_sources'
-
-    id = db_local.Column(db_local.Integer, primary_key=True)
-    name = db_local.Column(db_local.String(100), nullable=False)
-    source_type = db_local.Column(db_local.String(20), nullable=False) # 'DICOM' or 'PDF'
-    path = db_local.Column(db_local.String(500), nullable=False)
-    active = db_local.Column(db_local.Boolean, default=True)
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'name': self.name,
-            'source_type': self.source_type,
-            'path': self.path,
-            'active': self.active
-        }
-
 class ScanCache(db_local.Model):
     __tablename__ = 'scan_cache'
 
@@ -112,7 +112,7 @@ class ScanCache(db_local.Model):
     extra_data_json = db_local.Column(db_local.Text, default='{}')
 
 def seed_defaults():
-    # 1. Default Settings
+    # 1. Paramètres par défaut
     default_settings = {
         'MYSQL_HOST': ('localhost', 'MySQL Host address'),
         'MYSQL_PORT': ('3306', 'MySQL Port'),
@@ -121,51 +121,39 @@ def seed_defaults():
         'MYSQL_DB': ('db_iuct', 'MySQL Database Name'),
         'ADMIN_PASSWORD': ('admin', 'Admin Login Password'),
         'APP_TITLE': ('CQ Dashboard - IUCT Oncopole', 'Application Title'),
-        'SCANDIDOS_SIGNATURE': ('Scandidos', 'String signature for Scandidos files'),
-        'DEFAULT_TOMO_ENERGY': ('6 MV', 'Default Tomo energy display'),
-        'IMPLANT_PATIENT_ID': ('IMPLANT', 'Special patient ID for end of day schedule')
+        'SCANDIDOS_SIGNATURE': ('114358', 'Signature des fichiers Scandidos'),
+        'DEFAULT_TOMO_ENERGY': ('6FFF', 'Default Tomo energy display'),
     }
     for key, (val, desc) in default_settings.items():
         if not Setting.query.filter_by(key=key).first():
             db_local.session.add(Setting(key=key, value=val, description=desc))
 
-    # 2. Default Tabs
+    # 2. Onglets avec dossiers réseau par défaut
     if CQTab.query.count() == 0:
-        tabs = [
-            CQTab(name='tomo2', label='Tomo 2', display_order=1, machines_json=json.dumps(['Tomo 2'])),
-            CQTab(name='tomo4', label='Tomo 4', display_order=2, machines_json=json.dumps(['Tomo 4'])),
-            CQTab(name='tomo7', label='Tomo 7', display_order=3, machines_json=json.dumps(['Tomo 7'])),
-            CQTab(name='nova', label='Nova', display_order=4, machines_json=json.dumps(['Nova', 'Ruby'])),
+        default_tabs = [
+            CQTab(name='tomo2', label='Tomo 2', display_order=1),
+            CQTab(name='tomo4', label='Tomo 4', display_order=2),
+            CQTab(name='tomo7', label='Tomo 7', display_order=3),
+            CQTab(name='nova', label='Nova', display_order=4),
         ]
-        db_local.session.add_all(tabs)
+        default_tabs[0].set_config(['Tomo 2'], [r'\\nasdata1\TOMO\02 - CQ Patients\0_DELTA4\TOMO2'])
+        default_tabs[1].set_config(['Tomo 4'], [r'\\nasdata1\TOMO\02 - CQ Patients\0_DELTA4\TOMO4'])
+        default_tabs[2].set_config(['Tomo 7'], [r'\\nasdata1\TOMO\02 - CQ Patients\0_DELTA4\RADI7'])
+        default_tabs[3].set_config(['Nova', 'Ruby'], [
+            r'\\srv015\Radiophysique_acquisition\Patients_stereo_EC_IUC',
+            r'\\srv015\Radiophysique_acquisition\Patients_stereo_Hyperarc',
+            r'\\srv015\Radiophysique_acquisition\Patients_RA'
+        ])
+        db_local.session.add_all(default_tabs)
 
-    # 3. Default Machines
+    # 3. Machines par défaut
     if CQMachine.query.count() == 0:
         machines = [
-            CQMachine(name='Tomo 2', label='Tomotherapy 2', display_order=1, duration_rules_json=json.dumps({
-                'base_offset': 7, 'per_target_offset': 3, 'use_beam_duration': True
-            })),
-            CQMachine(name='Tomo 4', label='Tomotherapy 4', display_order=2, duration_rules_json=json.dumps({
-                'base_offset': 7, 'per_target_offset': 3, 'use_beam_duration': True
-            })),
-            CQMachine(name='Tomo 7', label='Tomotherapy 7', display_order=3, duration_rules_json=json.dumps({
-                'base_offset': 7, 'per_target_offset': 3, 'use_beam_duration': True
-            })),
-            CQMachine(name='Nova', label='Halcyon Nova', display_order=4, duration_rules_json=json.dumps({
-                'base_offset': 8, 'per_target_offset': 0, 'fixed_duration': 8
-            })),
-            CQMachine(name='Ruby', label='Ethos Ruby', display_order=5, duration_rules_json=json.dumps({
-                'base_offset': 12, 'per_target_offset': 0, 'fixed_duration': 12
-            })),
+            CQMachine(name='Tomo 2', label='Tomotherapy 2', display_order=1, duration_rules_json=json.dumps({'fixed_duration': 3})),
+            CQMachine(name='Tomo 4', label='Tomotherapy 4', display_order=2, duration_rules_json=json.dumps({'fixed_duration': 3})),
+            CQMachine(name='Tomo 7', label='Tomotherapy 7', display_order=3, duration_rules_json=json.dumps({'fixed_duration': 3})),
+            CQMachine(name='Nova', label='Nova', display_order=4, duration_rules_json=json.dumps({'fixed_duration': 12})),
         ]
         db_local.session.add_all(machines)
-
-    # 4. Default Network Sources
-    if CQSource.query.count() == 0:
-        sources = [
-            CQSource(name='NAS DICOM Export', source_type='DICOM', path=r'\\nas_iuct\dicom_export', active=True),
-            CQSource(name='NAS PDF Reports', source_type='PDF', path=r'\\nas_iuct\pdf_reports', active=True)
-        ]
-        db_local.session.add_all(sources)
 
     db_local.session.commit()

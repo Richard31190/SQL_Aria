@@ -2,7 +2,7 @@
 import io
 import zipfile
 from flask import Blueprint, render_template, request, redirect, url_for, flash, session, send_file
-from app.models_local import db_local, Setting, CQTab, CQMachine, CQSource
+from app.models_local import db_local, Setting, CQTab, CQMachine
 
 admin_bp = Blueprint('admin', __name__)
 
@@ -34,19 +34,17 @@ def index():
     settings = Setting.query.all()
     tabs = CQTab.query.order_by(CQTab.display_order).all()
     machines = CQMachine.query.order_by(CQMachine.display_order).all()
-    sources = CQSource.query.all()
     return render_template('admin/index.html',
                            settings=settings,
                            tabs=[t.to_dict() for t in tabs],
-                           machines=[m.to_dict() for m in machines],
-                           sources=[s.to_dict() for s in sources])
+                           machines=[m.to_dict() for m in machines])
 
 @admin_bp.route('/settings', methods=['POST'])
 def update_settings():
     for key in request.form:
         if key != 'csrf_token':
             Setting.set_val(key, request.form[key])
-    flash('Parametres mis a jour avec succes', 'success')
+    flash('Paramètres mis à jour avec succès', 'success')
     return redirect(url_for('admin.index'))
 
 @admin_bp.route('/tabs/save', methods=['POST'])
@@ -55,10 +53,12 @@ def save_tab():
     name = request.form.get('name')
     label = request.form.get('label')
     order = request.form.get('display_order', 0)
-
-    # Lire le champ CSV du template
+    
     machines_csv = request.form.get('machines_csv', '')
+    network_paths_csv = request.form.get('network_paths_csv', '')
+
     machines = [m.strip() for m in machines_csv.split(',') if m.strip()]
+    network_paths = [p.strip() for p in network_paths_csv.split(',') if p.strip()]
 
     if tab_id:
         tab = CQTab.query.get(tab_id)
@@ -68,11 +68,11 @@ def save_tab():
     tab.name = name
     tab.label = label
     tab.display_order = int(order)
-    tab.set_machines(machines)
+    tab.set_config(machines, network_paths)
 
     db_local.session.add(tab)
     db_local.session.commit()
-    flash('Onglet sauvegarde avec succes', 'success')
+    flash('Onglet et dossiers réseau sauvegardés avec succès', 'success')
     return redirect(url_for('admin.index'))
 
 @admin_bp.route('/tabs/delete/<int:tab_id>', methods=['POST'])
@@ -80,7 +80,7 @@ def delete_tab(tab_id):
     tab = CQTab.query.get_or_404(tab_id)
     db_local.session.delete(tab)
     db_local.session.commit()
-    flash('Onglet supprime', 'success')
+    flash('Onglet supprimé', 'success')
     return redirect(url_for('admin.index'))
 
 @admin_bp.route('/machines/save', methods=['POST'])
@@ -110,7 +110,7 @@ def save_machine():
 
     db_local.session.add(m)
     db_local.session.commit()
-    flash('Machine sauvegardee', 'success')
+    flash('Machine sauvegardée', 'success')
     return redirect(url_for('admin.index'))
 
 @admin_bp.route('/machines/delete/<int:m_id>', methods=['POST'])
@@ -118,38 +118,7 @@ def delete_machine(m_id):
     m = CQMachine.query.get_or_404(m_id)
     db_local.session.delete(m)
     db_local.session.commit()
-    flash('Machine meutisee / supprimee', 'success')
-    return redirect(url_for('admin.index'))
-
-@admin_bp.route('/sources/save', methods=['POST'])
-def save_source():
-    s_id = request.form.get('id')
-    name = request.form.get('name')
-    stype = request.form.get('source_type')
-    path = request.form.get('path')
-    active = 'active' in request.form
-
-    if s_id:
-        src = CQSource.query.get(s_id)
-    else:
-        src = CQSource()
-
-    src.name = name
-    src.source_type = stype
-    src.path = path
-    src.active = active
-
-    db_local.session.add(src)
-    db_local.session.commit()
-    flash('Source reseau sauvegardee', 'success')
-    return redirect(url_for('admin.index'))
-
-@admin_bp.route('/sources/delete/<int:s_id>', methods=['POST'])
-def delete_source(s_id):
-    src = CQSource.query.get_or_404(s_id)
-    db_local.session.delete(src)
-    db_local.session.commit()
-    flash('Source supprimee', 'success')
+    flash('Machine supprimée', 'success')
     return redirect(url_for('admin.index'))
 
 @admin_bp.route('/backup')
