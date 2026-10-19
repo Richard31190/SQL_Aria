@@ -18,6 +18,7 @@ def get_data():
         'status': 'success',
         'main_rows': data['main_rows'],
         'prep_rows': data['prep_rows'],
+        'counts': data.get('counts', {}),
         'timestamp': request.args.get('_t')
     })
 

@@ -10,7 +10,7 @@
             {% for tab in tabs %}
             <button data-tab="{{ tab.name }}"
                     class="tab-btn px-4 py-2 rounded-lg text-sm font-semibold transition-all border border-slate-300 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 {% if loop.first %}bg-cyan-600 text-white dark:bg-cyan-600 border-cyan-600 active-tab{% endif %}">
-                <i class="fa-solid fa-desktop mr-1.5"></i> {{ tab.label }}
+                <i class="fa-solid fa-desktop mr-1.5"></i> {{ tab.label }} <span class="tab-count opacity-75"></span>
             </button>
             {% endfor %}
         </div>
@@ -101,6 +101,15 @@
             .then(data => {
                 renderTable(data.main_rows);
                 renderPrepTable(data.prep_rows);
+                const keyOf = n => {
+                    const k = n.toLowerCase().replace(/[^a-z0-9]/g, '');
+                    return k.includes('tomo2') ? 'tomo2' : k.includes('tomo4') ? 'tomo4'
+                        : (k.includes('tomo7') || k.includes('radi7')) ? 'tomo7' : 'nova';
+                };
+                document.querySelectorAll('.tab-btn').forEach(b => {
+                    const c = (data.counts || {})[keyOf(b.dataset.tab)];
+                    b.querySelector('.tab-count').innerText = c !== undefined ? `(${c})` : '';
+                });
             });
     }
 
