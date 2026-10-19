@@ -7,32 +7,30 @@ Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "SQL Aria", "SQL Aria.pyproj
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "CQ_Dashboard_Web", "CQ_Dashboard_Web", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
 	ProjectSection(SolutionItems) = preProject
-		requirements_web.txt = requirements_web.txt
-		run.py = run.py
+		CQ_Dashboard_Web\config.py = CQ_Dashboard_Web\config.py
+		CQ_Dashboard_Web\requirements_web.txt = CQ_Dashboard_Web\requirements_web.txt
+		CQ_Dashboard_Web\run.py = CQ_Dashboard_Web\run.py
 	EndProjectSection
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "routes", "routes", "{55F6AAE9-4EE9-4B33-A793-7B8761D8EDB7}"
 	ProjectSection(SolutionItems) = preProject
-		app\routes\admin.py = app\routes\admin.py
-		app\routes\main.py = app\routes\main.py
-		__init__.py = __init__.py
+		CQ_Dashboard_Web\app\routes\admin.py = CQ_Dashboard_Web\app\routes\admin.py
+		CQ_Dashboard_Web\app\routes\main.py = CQ_Dashboard_Web\app\routes\main.py
 	EndProjectSection
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "app", "app", "{EA3FFE4A-BD0C-42CB-95AE-CCECC0A47057}"
 	ProjectSection(SolutionItems) = preProject
-		app\models_aria.py = app\models_aria.py
-		app\models_local.py = app\models_local.py
-		app\__init__.py = app\__init__.py
+		CQ_Dashboard_Web\app\models_aria.py = CQ_Dashboard_Web\app\models_aria.py
+		CQ_Dashboard_Web\app\models_local.py = CQ_Dashboard_Web\app\models_local.py
+		CQ_Dashboard_Web\app\__init__.py = CQ_Dashboard_Web\app\__init__.py
 	EndProjectSection
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "static", "static", "{55A9D341-B704-41B6-8B77-8ED878C1EDC4}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "templates", "templates", "{CDFAF63B-9DF0-4E66-88EE-0FCAC66E87C4}"
 	ProjectSection(SolutionItems) = preProject
-		app\templates\admin.html = app\templates\admin.html
-		app\templates\admin_login.html = app\templates\admin_login.html
-		app\templates\base.html = app\templates\base.html
-		app\templates\dashboard.html = app\templates\dashboard.html
+		CQ_Dashboard_Web\app\templates\base.html = CQ_Dashboard_Web\app\templates\base.html
+		CQ_Dashboard_Web\app\templates\dashboard.html = CQ_Dashboard_Web\app\templates\dashboard.html
 	EndProjectSection
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "instance", "instance", "{4A401DC1-B6E7-4064-AF1F-E7457BE5B4A7}"
@@ -43,10 +41,14 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "js", "js", "{D490B18E-944B-
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "services", "services", "{C528C8E5-8973-4BC7-A40D-BD7D4186619F}"
 	ProjectSection(SolutionItems) = preProject
-		app\services\aria_service.py = app\services\aria_service.py
-		app\services\config_utils.py = app\services\config_utils.py
-		app\services\network_service.py = app\services\network_service.py
-		app\services\__init__.py = app\services\__init__.py
+		CQ_Dashboard_Web\app\services\business.py = CQ_Dashboard_Web\app\services\business.py
+		CQ_Dashboard_Web\app\services\__init__.py = CQ_Dashboard_Web\app\services\__init__.py
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "admin", "admin", "{05D5FE84-1B42-4033-947A-6CCB5F090AA2}"
+	ProjectSection(SolutionItems) = preProject
+		CQ_Dashboard_Web\app\templates\admin\index.html = CQ_Dashboard_Web\app\templates\admin\index.html
+		CQ_Dashboard_Web\app\templates\admin\login.html = CQ_Dashboard_Web\app\templates\admin\login.html
 	EndProjectSection
 EndProject
 Global
@@ -70,6 +72,7 @@ Global
 		{C98E3C5A-3CEF-412E-871C-34C1D603F53A} = {55A9D341-B704-41B6-8B77-8ED878C1EDC4}
 		{D490B18E-944B-485C-9087-531FB93424ED} = {55A9D341-B704-41B6-8B77-8ED878C1EDC4}
 		{C528C8E5-8973-4BC7-A40D-BD7D4186619F} = {EA3FFE4A-BD0C-42CB-95AE-CCECC0A47057}
+		{05D5FE84-1B42-4033-947A-6CCB5F090AA2} = {CDFAF63B-9DF0-4E66-88EE-0FCAC66E87C4}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {5B5C9809-1E23-4BDA-937F-B0C50D8B384B}

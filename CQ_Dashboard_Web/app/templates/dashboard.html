@@ -1,0 +1,200 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="p-6 space-y-6">
+
+    <!-- Top Bar & Machine Tabs -->
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
+        <!-- Dynamic Dynamic Machine Tabs -->
+        <div class="flex flex-wrap gap-2" id="tab-container">
+            {% for tab in tabs %}
+            <button data-tab="{{ tab.name }}"
+                    class="tab-btn px-4 py-2 rounded-lg text-sm font-semibold transition-all border border-slate-300 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 {% if loop.first %}bg-cyan-600 text-white dark:bg-cyan-600 border-cyan-600 active-tab{% endif %}">
+                <i class="fa-solid fa-desktop mr-1.5"></i> {{ tab.label }}
+            </button>
+            {% endfor %}
+        </div>
+
+        <!-- Controls -->
+        <div class="flex items-center space-x-3 w-full sm:w-auto">
+            <div class="relative flex-1 sm:w-64">
+                <input type="text" id="search-input" placeholder="Rechercher patient..."
+                       class="w-full pl-9 pr-4 py-2 rounded-lg text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-cyan-500 text-slate-900 dark:text-slate-100">
+                <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-sm"></i>
+            </div>
+            <button id="scan-btn" title="Scanner reseau NAS" class="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center">
+                <i class="fa-solid fa-network-wired mr-2"></i> Scan NAS
+            </button>
+            <button id="refresh-btn" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center">
+                <i class="fa-solid fa-rotate text-sm"></i>
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Table Container -->
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md border border-slate-200 dark:border-slate-700 overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="w-full text-xs text-left border-collapse">
+                <thead class="bg-slate-900 text-slate-300 uppercase tracking-wider text-[11px]">
+                    <tr>
+                        <th class="p-2 border-b border-slate-700">Machine</th>
+                        <th class="p-2 border-b border-slate-700">Heure</th>
+                        <th class="p-2 border-b border-slate-700">Duree Calc</th>
+                        <th class="p-2 border-b border-slate-700">IPP</th>
+                        <th class="p-2 border-b border-slate-700">Nom</th>
+                        <th class="p-2 border-b border-slate-700">Prenom</th>
+                        <th class="p-2 border-b border-slate-700 text-center">Scandidos</th>
+                        <th class="p-2 border-b border-slate-700 text-center">PDF</th>
+                        <th class="p-2 border-b border-slate-700">MET</th>
+                        <th class="p-2 border-b border-slate-700">Energie</th>
+                        <th class="p-2 border-b border-slate-700">Technique</th>
+                        <th class="p-2 border-b border-slate-700">Statut</th>
+                        <th class="p-2 border-b border-slate-700">Commentaire</th>
+                    </tr>
+                </thead>
+                <tbody id="dashboard-table-body" class="divide-y divide-slate-200 dark:divide-slate-700 font-medium">
+                    <!-- Rows rendered dynamically via Javascript -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Preparation Panel (Collapsible) -->
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md border border-slate-200 dark:border-slate-700 overflow-hidden">
+        <div class="p-4 bg-slate-900 text-white flex justify-between items-center cursor-pointer" id="prep-header">
+            <div class="flex items-center space-x-2">
+                <i class="fa-solid fa-list-check text-cyan-400"></i>
+                <h3 class="font-bold text-sm">Patients en cours de preparation</h3>
+                <span id="prep-count" class="bg-cyan-600 text-white px-2 py-0.5 rounded-full text-xs">0</span>
+            </div>
+            <i class="fa-solid fa-chevron-down text-slate-400 transition-transform" id="prep-chevron"></i>
+        </div>
+        <div id="prep-body" class="p-4 hidden">
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs text-left border-collapse">
+                    <thead class="bg-slate-100 dark:bg-slate-900 text-slate-700 dark:text-slate-300 uppercase tracking-wider text-[10px]">
+                        <tr>
+                            <th class="p-2 border-b">IPP</th>
+                            <th class="p-2 border-b">Nom / Prenom</th>
+                            <th class="p-2 border-b">Tache</th>
+                            <th class="p-2 border-b">Echeance</th>
+                            <th class="p-2 border-b">Statut</th>
+                        </tr>
+                    </thead>
+                    <tbody id="prep-table-body" class="divide-y divide-slate-200 dark:divide-slate-700">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let activeTab = "{{ default_tab }}";
+
+    function loadData() {
+        fetch(`/api/data?tab=${activeTab}&_t=${Date.now()}`)
+            .then(res => res.json())
+            .then(data => {
+                renderTable(data.main_rows);
+                renderPrepTable(data.prep_rows);
+            });
+    }
+
+    function renderTable(rows) {
+        const tbody = document.getElementById('dashboard-table-body');
+        tbody.innerHTML = '';
+
+        if (!rows || rows.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="13" class="p-4 text-center text-slate-500">Aucun rendez-vous trouve.</td></tr>`;
+            return;
+        }
+
+        rows.forEach(r => {
+            const tr = document.createElement('tr');
+            tr.className = `${r.met_color} hover:brightness-95 transition-all`;
+            tr.innerHTML = `
+                <td class="p-2 font-bold">${r.machine}</td>
+                <td class="p-2 font-mono">${r.scheduled_time}</td>
+                <td class="p-2 font-mono text-cyan-700 dark:text-cyan-400 font-bold">${r.base_duration} min</td>
+                <td class="p-2 font-mono">${r.patient_id}</td>
+                <td class="p-2 uppercase font-semibold">${r.last_name}</td>
+                <td class="p-2 capitalize">${r.first_name}</td>
+                <td class="p-2 text-center text-base">${r.scandidos}</td>
+                <td class="p-2 text-center text-base">${r.pdf}</td>
+                <td class="p-2 font-mono">${r.met_date}</td>
+                <td class="p-2">${r.energy}</td>
+                <td class="p-2 text-slate-600 dark:text-slate-400">${r.technique}</td>
+                <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-slate-700">${r.status}</span></td>
+                <td class="p-2 text-slate-500 italic">${r.comment}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function renderPrepTable(rows) {
+        const tbody = document.getElementById('prep-table-body');
+        document.getElementById('prep-count').innerText = rows.length;
+        tbody.innerHTML = '';
+
+        rows.forEach(r => {
+            const tr = document.createElement('tr');
+            tr.className = 'hover:bg-slate-50 dark:hover:bg-slate-800/50';
+            tr.innerHTML = `
+                <td class="p-2 font-mono font-bold text-slate-900 dark:text-slate-100">${r.patient_id}</td>
+                <td class="p-2 font-semibold">${r.patient_name}</td>
+                <td class="p-2 text-cyan-600 dark:text-cyan-400 font-medium">${r.task_name}</td>
+                <td class="p-2 font-mono text-slate-500">${r.due_date}</td>
+                <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200">${r.status}</span></td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    // Dynamic Tab Switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.tab-btn').forEach(b => {
+                b.classList.remove('bg-cyan-600', 'text-white', 'border-cyan-600');
+                b.classList.add('text-slate-700', 'dark:text-slate-300');
+            });
+            this.classList.add('bg-cyan-600', 'text-white', 'border-cyan-600');
+            activeTab = this.getAttribute('data-tab');
+            loadData();
+        });
+    });
+
+    // Toggle Preparation Panel
+    document.getElementById('prep-header').addEventListener('click', function() {
+        const body = document.getElementById('prep-body');
+        const chevron = document.getElementById('prep-chevron');
+        body.classList.toggle('hidden');
+        chevron.classList.toggle('rotate-180');
+    });
+
+    // Manual Network Scan Trigger
+    document.getElementById('scan-btn').addEventListener('click', function() {
+        this.disabled = true;
+        this.innerHTML = `<i class="fa-solid fa-spinner fa-spin mr-2"></i> Scan en cours...`;
+        fetch('/api/scan', { method: 'POST' })
+            .then(res => res.json())
+            .then(res => {
+                alert(`Scan termine: ${res.found_new} nouveaux fichiers detectes.`);
+                loadData();
+            })
+            .finally(() => {
+                this.disabled = false;
+                this.innerHTML = `<i class="fa-solid fa-network-wired mr-2"></i> Scan NAS`;
+            });
+    });
+
+    document.getElementById('refresh-btn').addEventListener('click', loadData);
+
+    // Initial Load & Auto Refresh every 60 seconds
+    loadData();
+    setInterval(loadData, 60000);
+</script>
+{% endblock %}

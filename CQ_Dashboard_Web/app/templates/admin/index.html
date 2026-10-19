@@ -1,0 +1,261 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="p-6 space-y-6 max-w-7xl mx-auto w-full">
+
+    <div class="flex justify-between items-center border-b border-slate-200 dark:border-slate-800 pb-4">
+        <div>
+            <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Administration du Système</h1>
+            <p class="text-sm text-slate-500">Gestion des configurations, bases de données, machines et règles métier</p>
+        </div>
+        <div class="flex space-x-3">
+            <a href="/admin/backup" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition-colors">
+                <i class="fa-solid fa-download mr-2"></i>Sauvegarder Config (ZIP)
+            </a>
+            <a href="/admin/logout" class="px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white rounded-lg text-sm font-medium transition-colors">
+                <i class="fa-solid fa-right-from-bracket mr-2"></i>Déconnexion
+            </a>
+        </div>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    {% for category, message in messages %}
+    <div class="px-4 py-3 rounded-lg text-sm font-medium
+                        {% if category == 'success' %}bg-emerald-100 text-emerald-800 border border-emerald-300
+                        {% elif category == 'danger' %}bg-red-100 text-red-800 border border-red-300
+                        {% else %}bg-slate-100 text-slate-800 border border-slate-300{% endif %}">
+        {{ message }}
+    </div>
+    {% endfor %}
+    {% endif %}
+    {% endwith %}
+
+    <!-- General Settings Form -->
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-6 border border-slate-200 dark:border-slate-700">
+        <h2 class="text-lg font-bold text-slate-900 dark:text-white mb-4"><i class="fa-solid fa-database text-cyan-500 mr-2"></i>Connexion ARIA MySQL & Paramètres Globaux</h2>
+
+        <form action="/admin/settings" method="POST" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {% for s in settings %}
+            <div>
+                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">{{ s.description or s.key }}</label>
+                <input type="text" name="{{ s.key }}" value="{{ s.value }}" class="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100">
+            </div>
+            {% endfor %}
+            <div class="md:col-span-2 pt-2">
+                <button type="submit" class="px-6 py-2.5 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg font-medium text-sm transition-colors">
+                    <i class="fa-solid fa-floppy-disk mr-2"></i>Enregistrer les paramètres
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Tabs Configuration (Onglets) -->
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-6 border border-slate-200 dark:border-slate-700">
+        <h2 class="text-lg font-bold text-slate-900 dark:text-white mb-4"><i class="fa-solid fa-window-restore text-purple-500 mr-2"></i>Onglets de la page d'accueil (Tabs)</h2>
+
+        <div class="space-y-4">
+            {% for t in tabs %}
+            <div class="p-4 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700 grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+                <form action="/admin/tabs/save" method="POST" class="contents">
+                    <input type="hidden" name="id" value="{{ t.id }}">
+                    <div>
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">Nom Interne</label>
+                        <input type="text" name="name" value="{{ t.name }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">Libellé Display</label>
+                        <input type="text" name="label" value="{{ t.label }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">Ordre</label>
+                        <input type="number" name="display_order" value="{{ t.display_order }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">Machines (séparées par virgule)</label>
+                        <input type="text" name="machines_csv" value="{{ (t.machines or []) | join(',') }}" placeholder="Tomo1,Tomo2" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    </div>
+                    <div>
+                        <button type="submit" class="w-full px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white rounded text-xs font-semibold">Sauvegarder</button>
+                    </div>
+                </form>
+                <form action="/admin/tabs/delete/{{ t.id }}" method="POST" class="md:col-span-5 flex justify-end" onsubmit="return confirm('Supprimer cet onglet ?');">
+                    <button type="submit" class="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-[11px] font-semibold">
+                        <i class="fa-solid fa-trash mr-1"></i>Supprimer
+                    </button>
+                </form>
+            </div>
+            {% endfor %}
+
+            <!-- Formulaire Nouvel Onglet -->
+            <form action="/admin/tabs/save" method="POST" class="p-4 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg border-2 border-dashed border-emerald-400 dark:border-emerald-700 grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+                <input type="hidden" name="id" value="">
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Nom Interne</label>
+                    <input type="text" name="name" placeholder="ex: tomo1" required class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Libellé Display</label>
+                    <input type="text" name="label" placeholder="ex: Tomo 1" required class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Ordre</label>
+                    <input type="number" name="display_order" value="0" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Machines (séparées par virgule)</label>
+                    <input type="text" name="machines_csv" placeholder="Tomo1,Tomo2" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                </div>
+                <div>
+                    <button type="submit" class="w-full px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-semibold"><i class="fa-solid fa-plus mr-1"></i>Ajouter</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Machines Configuration -->
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-6 border border-slate-200 dark:border-slate-700">
+        <h2 class="text-lg font-bold text-slate-900 dark:text-white mb-4"><i class="fa-solid fa-radiation text-amber-500 mr-2"></i>Machines & Règles de Calcul Temporel</h2>
+
+        <div class="space-y-4">
+            {% for m in machines %}
+            <div class="p-4 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700 grid grid-cols-1 md:grid-cols-7 gap-3 items-end">
+                <form action="/admin/machines/save" method="POST" class="contents">
+                    <input type="hidden" name="id" value="{{ m.id }}">
+                    <div>
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">Nom Interne</label>
+                        <input type="text" name="name" value="{{ m.name }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">Libellé Display</label>
+                        <input type="text" name="label" value="{{ m.label }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">Ordre</label>
+                        <input type="number" name="display_order" value="{{ m.display_order }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">Base (min)</label>
+                        <input type="number" name="base_offset" value="{{ (m.duration_rules.base_offset if m.duration_rules else 7) or 7 }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">Par Cible (min)</label>
+                        <input type="number" name="per_target_offset" value="{{ (m.duration_rules.per_target_offset if m.duration_rules else 3) or 3 }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">Durée Fixe (min)</label>
+                        <input type="number" name="fixed_duration" value="{{ (m.duration_rules.fixed_duration if m.duration_rules else 10) or 10 }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    </div>
+                    <div>
+                        <button type="submit" class="w-full px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white rounded text-xs font-semibold">Sauvegarder</button>
+                    </div>
+                </form>
+                <form action="/admin/machines/delete/{{ m.id }}" method="POST" class="md:col-span-7 flex justify-end" onsubmit="return confirm('Supprimer cette machine ?');">
+                    <button type="submit" class="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-[11px] font-semibold">
+                        <i class="fa-solid fa-trash mr-1"></i>Supprimer
+                    </button>
+                </form>
+            </div>
+            {% endfor %}
+
+            <!-- Formulaire Nouvelle Machine -->
+            <form action="/admin/machines/save" method="POST" class="p-4 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg border-2 border-dashed border-emerald-400 dark:border-emerald-700 grid grid-cols-1 md:grid-cols-7 gap-3 items-end">
+                <input type="hidden" name="id" value="">
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Nom Interne</label>
+                    <input type="text" name="name" placeholder="ex: TrueBeam1" required class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Libellé Display</label>
+                    <input type="text" name="label" placeholder="ex: TrueBeam 1" required class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Ordre</label>
+                    <input type="number" name="display_order" value="0" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Base (min)</label>
+                    <input type="number" name="base_offset" value="7" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Par Cible (min)</label>
+                    <input type="number" name="per_target_offset" value="3" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Durée Fixe (min)</label>
+                    <input type="number" name="fixed_duration" value="10" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                </div>
+                <div>
+                    <button type="submit" class="w-full px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-semibold"><i class="fa-solid fa-plus mr-1"></i>Ajouter</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Network Sources Configuration -->
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-6 border border-slate-200 dark:border-slate-700">
+        <h2 class="text-lg font-bold text-slate-900 dark:text-white mb-4"><i class="fa-solid fa-folder-tree text-emerald-500 mr-2"></i>Sources de Scan Réseau NAS (DICOM & PDF)</h2>
+
+        <div class="space-y-4">
+            {% for s in sources %}
+            <div class="p-4 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700 grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+                <form action="/admin/sources/save" method="POST" class="contents">
+                    <input type="hidden" name="id" value="{{ s.id }}">
+                    <div>
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">Nom Source</label>
+                        <input type="text" name="name" value="{{ s.name }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">Type Source</label>
+                        <select name="source_type" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                            <option value="DICOM" {% if s.source_type=='DICOM' %}selected{% endif %}>DICOM / XML / JSON</option>
+                            <option value="PDF" {% if s.source_type=='PDF' %}selected{% endif %}>Rapports PDF</option>
+                        </select>
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">Chemin Dossier Partagé NAS</label>
+                        <input type="text" name="path" value="{{ s.path }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono">
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <input type="checkbox" name="active" value="active" {% if s.active %}checked{% endif %} class="rounded">
+                        <span class="text-xs">Actif</span>
+                        <button type="submit" class="ml-auto px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-semibold">Sauvegarder</button>
+                    </div>
+                </form>
+                <form action="/admin/sources/delete/{{ s.id }}" method="POST" class="md:col-span-5 flex justify-end" onsubmit="return confirm('Supprimer cette source ?');">
+                    <button type="submit" class="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-[11px] font-semibold">
+                        <i class="fa-solid fa-trash mr-1"></i>Supprimer
+                    </button>
+                </form>
+            </div>
+            {% endfor %}
+
+            <!-- Formulaire Nouvelle Source -->
+            <form action="/admin/sources/save" method="POST" class="p-4 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg border-2 border-dashed border-emerald-400 dark:border-emerald-700 grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+                <input type="hidden" name="id" value="">
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Nom Source</label>
+                    <input type="text" name="name" placeholder="ex: NAS Scandidos" required class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Type Source</label>
+                    <select name="source_type" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                        <option value="DICOM">DICOM / XML / JSON</option>
+                        <option value="PDF">Rapports PDF</option>
+                    </select>
+                </div>
+                <div class="md:col-span-2">
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Chemin Dossier Partagé NAS</label>
+                    <input type="text" name="path" placeholder="\\serveur\partage\dossier" required class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono">
+                </div>
+                <div class="flex items-center space-x-2">
+                    <input type="checkbox" name="active" value="active" checked class="rounded">
+                    <span class="text-xs">Actif</span>
+                    <button type="submit" class="ml-auto px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-semibold"><i class="fa-solid fa-plus mr-1"></i>Ajouter</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+</div>
+{% endblock %}
