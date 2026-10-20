@@ -95,22 +95,27 @@ def row_color(met, now, limit):
 
 def find_tab_for_focus(focus_lower, tabs):
     """Trouve l'onglet correspondant à un display_focus en cherchant
-    les mots-clés ARIA de chaque onglet dans la chaîne."""
+    les mots-clés ARIA de chaque onglet dans la chaîne.
+    Matching insensible aux espaces : 'Tomo2' matche 'tomo 2'."""
+    focus_norm = normalize(focus_lower)
     for tab in tabs:
         for kw in tab.get_aria_keywords():
-            if kw.lower() in focus_lower:
+            if normalize(kw) in focus_norm:
                 return tab
     return None
 
+def normalize(text):
+    """Supprime les espaces et met en minuscule pour le matching."""
+    return re.sub(r'\s+', '', text.lower())
 
-def find_technique_duration(focus_lower, techniques):
-    """Trouve la durée d'acquisition correspondant à la technique
-    en cherchant le mot-clé ARIA de chaque technique dans le display_focus."""
+def find_technique_rules(focus_lower, techniques):
+    """Trouve les règles temporelles correspondant à la technique.
+    Retourne : (acquisition, montage, nom_technique)"""
+    focus_norm = normalize(focus_lower)
     for tech in techniques:
-        if tech.name.lower() in focus_lower:
-            return tech.get_acquisition()
-    return 15  # durée par défaut si aucune technique ne match
-
+        if normalize(tech.name) in focus_norm:
+            return tech.get_acquisition(), tech.get_mount_unmount(), tech.name
+    return 15, 0, "Défaut"  # Valeurs si aucune technique ne matche
 
 # ============================================================
 # Requêtes SQL ARIA (inchangées)
@@ -348,7 +353,8 @@ def build_dashboard_data(tab_name=None):
         focus = str(r.get("task_display_focus") or "")
         focus_lower = focus.lower()
 
-        duration = find_technique_duration(focus_lower, techniques)
+        # On récupère Acquisition, Montage et Nom de la technique
+        acq_time, mount_time, tech_name = find_technique_rules(focus_lower, techniques)
         energy = active_tab.get_default_energy()
 
         main_rows.append({
@@ -364,7 +370,9 @@ def build_dashboard_data(tab_name=None):
             'energy': energy,
             'technique': focus,
             'status': str(r.get("task_status") or ""),
-            'base_duration': duration,
+            'base_duration': acq_time,       # Acquisition (min)
+            'mount_duration': mount_time,    # Montage (min)
+            'tech_name': tech_name,          # Nom pour le regroupement
             'comment': str(r.get("task_note") or ""),
             'physicist': str(r.get("physicist") or ""),
             'timeplanner': '✅' if r.get("Timeplanner") else '❌',
