@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>ca50970f-1443-425b-836d-323f43c380bd</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>main.py</StartupFile>
+    <StartupFile>CQ_Dashboard_Web\run.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -23,6 +23,16 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="config.py" />
+    <Compile Include="CQ_Dashboard_Web\app\models_aria.py" />
+    <Compile Include="CQ_Dashboard_Web\app\models_local.py" />
+    <Compile Include="CQ_Dashboard_Web\app\routes\admin.py" />
+    <Compile Include="CQ_Dashboard_Web\app\routes\main.py" />
+    <Compile Include="CQ_Dashboard_Web\app\services\business.py" />
+    <Compile Include="CQ_Dashboard_Web\app\services\__init__.py" />
+    <Compile Include="CQ_Dashboard_Web\app\__init__.py" />
+    <Compile Include="CQ_Dashboard_Web\config.py" />
+    <Compile Include="CQ_Dashboard_Web\models_aria.py" />
+    <Compile Include="CQ_Dashboard_Web\run.py" />
     <Compile Include="database.py" />
     <Compile Include="main.py" />
     <Compile Include="models.py" />
@@ -31,9 +41,39 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="ATT70966.env" />
+    <Content Include="CQ_Dashboard_Web\app\routes\__pycache__\admin.cpython-313.pyc" />
+    <Content Include="CQ_Dashboard_Web\app\routes\__pycache__\main.cpython-313.pyc" />
+    <Content Include="CQ_Dashboard_Web\app\services\__pycache__\business.cpython-313.pyc" />
+    <Content Include="CQ_Dashboard_Web\app\services\__pycache__\__init__.cpython-313.pyc" />
+    <Content Include="CQ_Dashboard_Web\app\templates\admin\index.html" />
+    <Content Include="CQ_Dashboard_Web\app\templates\admin\login.html" />
+    <Content Include="CQ_Dashboard_Web\app\templates\base.html" />
+    <Content Include="CQ_Dashboard_Web\app\templates\dashboard.html" />
+    <Content Include="CQ_Dashboard_Web\app\__pycache__\models_aria.cpython-313.pyc" />
+    <Content Include="CQ_Dashboard_Web\app\__pycache__\models_local.cpython-313.pyc" />
+    <Content Include="CQ_Dashboard_Web\app\__pycache__\__init__.cpython-313.pyc" />
+    <Content Include="CQ_Dashboard_Web\instance\local.db" />
+    <Content Include="CQ_Dashboard_Web\requirements_web.txt" />
+    <Content Include="CQ_Dashboard_Web\__pycache__\config.cpython-313.pyc" />
   </ItemGroup>
   <ItemGroup>
     <InterpreterReference Include="Global|PythonCore|3.13" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="CQ_Dashboard_Web\" />
+    <Folder Include="CQ_Dashboard_Web\app\" />
+    <Folder Include="CQ_Dashboard_Web\app\routes\" />
+    <Folder Include="CQ_Dashboard_Web\app\routes\__pycache__\" />
+    <Folder Include="CQ_Dashboard_Web\app\services\" />
+    <Folder Include="CQ_Dashboard_Web\app\services\__pycache__\" />
+    <Folder Include="CQ_Dashboard_Web\app\static\" />
+    <Folder Include="CQ_Dashboard_Web\app\static\css\" />
+    <Folder Include="CQ_Dashboard_Web\app\static\js\" />
+    <Folder Include="CQ_Dashboard_Web\app\templates\" />
+    <Folder Include="CQ_Dashboard_Web\app\templates\admin\" />
+    <Folder Include="CQ_Dashboard_Web\app\__pycache__\" />
+    <Folder Include="CQ_Dashboard_Web\instance\" />
+    <Folder Include="CQ_Dashboard_Web\__pycache__\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
