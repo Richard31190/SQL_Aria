@@ -382,6 +382,17 @@ def build_dashboard_data(tab_name=None):
             'status': f"Valid. méd. : {val.strftime('%d/%m') if val else '-'} | MET : {met.strftime('%d/%m') if met else '-'}",
         })
 
+        # === DEBUG PRÉPARATION ===
+        unmatched_prep = []
+        for r in imminent:
+            w = str(r.get("Workflow") or "").lower()
+            if not find_tab_for_focus(w, tabs):
+                unmatched_prep.append(w)
+        if unmatched_prep:
+            print(f"[DEBUG PREP] ⚠️ {len(unmatched_prep)} patients préparation NON RATTACHÉS :")
+            for u in set(unmatched_prep):
+                print(f"   - '{u}'")
+        # =========================
     return {'main_rows': main_rows, 'prep_rows': prep_rows, 'counts': counts}
 
 
