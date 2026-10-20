@@ -1,3 +1,4 @@
+# *** app\__init__.py ***
 from flask import Flask
 from config import Config
 from app.models_local import db_local, seed_defaults
