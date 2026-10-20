@@ -23,41 +23,103 @@
     {% if messages %}
     {% for category, message in messages %}
     <div class="px-4 py-3 rounded-lg text-sm font-medium
-                        {% if category == 'success' %}bg-emerald-100 text-emerald-800 border border-emerald-300
-                        {% elif category == 'danger' %}bg-red-100 text-red-800 border border-red-300
-                        {% else %}bg-slate-100 text-slate-800 border border-slate-300{% endif %}">
+                {% if category == 'success' %}bg-emerald-100 text-emerald-800 border border-emerald-300
+                {% elif category == 'danger' %}bg-red-100 text-red-800 border border-red-300
+                {% else %}bg-slate-100 text-slate-800 border border-slate-300{% endif %}">
         {{ message }}
     </div>
     {% endfor %}
     {% endif %}
     {% endwith %}
 
-    <!-- General Settings Form -->
+    <!-- ============================================================ -->
+    <!-- SECTION 1 : Connexion ARIA MySQL                              -->
+    <!-- ============================================================ -->
     <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-6 border border-slate-200 dark:border-slate-700">
-        <h2 class="text-lg font-bold text-slate-900 dark:text-white mb-4"><i class="fa-solid fa-database text-cyan-500 mr-2"></i>Connexion ARIA MySQL & Paramètres Globaux</h2>
+        <h2 class="text-lg font-bold text-slate-900 dark:text-white mb-4">
+            <i class="fa-solid fa-database text-cyan-500 mr-2"></i>Connexion ARIA MySQL
+        </h2>
 
         <form action="/admin/settings" method="POST" class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {% for s in settings %}
+            {% for s in settings if s.key in db_keys %}
             <div>
-                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">{{ s.description or s.key }}</label>
-                <input type="text" name="{{ s.key }}" value="{{ s.value }}" class="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100">
+                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">
+                    {{ s.description or s.key }}
+                </label>
+                {% if s.key == 'MYSQL_PASSWORD' %}
+                <div class="relative">
+                    <input type="password" id="mysql_password_field" name="{{ s.key }}" value="{{ s.value }}"
+                           class="w-full px-3 py-2 pr-10 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100">
+                    <button type="button" onclick="togglePassword()" class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-cyan-500">
+                        <i id="pwd_eye_icon" class="fa-solid fa-eye"></i>
+                    </button>
+                </div>
+                {% else %}
+                <input type="text" name="{{ s.key }}" value="{{ s.value }}"
+                       class="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100">
+                {% endif %}
             </div>
             {% endfor %}
-            <div class="md:col-span-2 pt-2">
+
+            <div class="md:col-span-2 pt-2 flex items-center space-x-3">
                 <button type="submit" class="px-6 py-2.5 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg font-medium text-sm transition-colors">
+                    <i class="fa-solid fa-floppy-disk mr-2"></i>Enregistrer la connexion
+                </button>
+                <button type="button" id="test-db-btn" onclick="testDbConnection()"
+                        class="px-6 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg font-medium text-sm transition-colors">
+                    <i class="fa-solid fa-plug mr-2"></i>Tester la connexion
+                </button>
+                <span id="test-db-result" class="text-sm font-semibold"></span>
+            </div>
+        </form>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 2 : Paramètres Globaux                                -->
+    <!-- ============================================================ -->
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-6 border border-slate-200 dark:border-slate-700">
+        <h2 class="text-lg font-bold text-slate-900 dark:text-white mb-4">
+            <i class="fa-solid fa-sliders text-indigo-500 mr-2"></i>Paramètres Globaux
+        </h2>
+
+        <form action="/admin/settings" method="POST" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {% for s in settings if s.key in global_keys %}
+            <div>
+                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">
+                    {{ s.description or s.key }}
+                </label>
+                {% if s.key == 'ADMIN_PASSWORD' %}
+                <div class="relative">
+                    <input type="password" id="admin_password_field" name="{{ s.key }}" value="{{ s.value }}"
+                           class="w-full px-3 py-2 pr-10 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100">
+                    <button type="button" onclick="toggleAdminPassword()" class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-cyan-500">
+                        <i id="admin_pwd_eye_icon" class="fa-solid fa-eye"></i>
+                    </button>
+                </div>
+                {% else %}
+                <input type="text" name="{{ s.key }}" value="{{ s.value }}"
+                       class="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100">
+                {% endif %}
+            </div>
+            {% endfor %}
+
+            <div class="md:col-span-2 pt-2">
+                <button type="submit" class="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium text-sm transition-colors">
                     <i class="fa-solid fa-floppy-disk mr-2"></i>Enregistrer les paramètres
                 </button>
             </div>
         </form>
     </div>
 
-    <!-- Tabs & Network Folders Configuration -->
+    <!-- ============================================================ -->
+    <!-- SECTION 3 : Onglets & Dossiers Réseau                         -->
+    <!-- ============================================================ -->
     <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-6 border border-slate-200 dark:border-slate-700">
         <h2 class="text-lg font-bold text-slate-900 dark:text-white mb-1">
             <i class="fa-solid fa-window-restore text-purple-500 mr-2"></i>Onglets de la page d'accueil & Dossiers Réseau
         </h2>
         <p class="text-xs text-slate-500 mb-4">
-            Configurez ici chaque onglet avec ses machines et ses <strong>dossiers réseau NAS à inspecter</strong> (les fichiers DICOM et PDF y seront recherchés). Séparez les dossiers par une <strong>virgule</strong> si plusieurs.
+            Configurez chaque onglet avec son <strong>dossier réseau à inspecter</strong> et les <strong>extensions de fichiers</strong> à rechercher. Séparez les dossiers / extensions par une <strong>virgule</strong> si plusieurs.
         </p>
 
         <div class="space-y-4">
@@ -66,30 +128,40 @@
                 <form action="/admin/tabs/save" method="POST" class="space-y-3">
                     <input type="hidden" name="id" value="{{ t.id }}">
 
-                    <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                         <div>
-                            <label class="block text-[10px] uppercase font-bold text-slate-500">Nom Interne (identifiant)</label>
-                            <input type="text" name="name" value="{{ t.name }}" required class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono">
+                            <label class="block text-[10px] uppercase font-bold text-slate-500">Nom ARIA</label>
+                            <input type="text" name="name" value="{{ t.name }}" required
+                                   class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono">
                         </div>
                         <div>
                             <label class="block text-[10px] uppercase font-bold text-slate-500">Libellé Affiché (titre)</label>
-                            <input type="text" name="label" value="{{ t.label }}" required class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                            <input type="text" name="label" value="{{ t.label }}" required
+                                   class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                         </div>
                         <div>
                             <label class="block text-[10px] uppercase font-bold text-slate-500">Ordre d'affichage</label>
-                            <input type="number" name="display_order" value="{{ t.display_order }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] uppercase font-bold text-slate-500">Machines associées (CSV)</label>
-                            <input type="text" name="machines_csv" value="{{ (t.machines or []) | join(', ') }}" placeholder="Tomo 2, Ruby" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                            <input type="number" name="display_order" value="{{ t.display_order }}"
+                                   class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                         </div>
                     </div>
 
                     <div>
                         <label class="block text-[10px] uppercase font-bold text-cyan-700 dark:text-cyan-400">
-                            <i class="fa-solid fa-folder-tree mr-1"></i>Dossiers Réseau Partagés NAS à inspecter (séparés par virgule si multiples)
+                            <i class="fa-solid fa-folder-tree mr-1"></i>Dossiers Réseau Partagés à inspecter (séparés par virgule si multiples)
                         </label>
-                        <input type="text" name="network_paths_csv" value="{{ (t.network_paths or []) | join(', ') }}" placeholder="\\nasdata1\TOMO\..., \\srv015\Patients_stereo_EC_IUC" class="w-full px-2 py-1.5 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono">
+                        <input type="text" name="network_paths_csv" value="{{ (t.network_paths or []) | join(', ') }}"
+                               placeholder="\\nasdata1\TOMO\..., \\srv015\Patients_stereo_EC_IUC"
+                               class="w-full px-2 py-1.5 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono">
+                    </div>
+
+                    <div>
+                        <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">
+                            <i class="fa-solid fa-file-code mr-1"></i>Extension des fichiers à rechercher (séparés par virgule si multiples)
+                        </label>
+                        <input type="text" name="file_extensions_csv" value="{{ (t.file_extensions or ['.dcm', '.pdf']) | join(', ') }}"
+                               placeholder=".dcm, .pdf"
+                               class="w-full px-2 py-1.5 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono">
                     </div>
 
                     <div class="flex justify-end pt-1">
@@ -99,7 +171,8 @@
                     </div>
                 </form>
 
-                <form action="/admin/tabs/delete/{{ t.id }}" method="POST" class="flex justify-end mt-2" onsubmit="return confirm('Voulez-vous vraiment supprimer cet onglet ?');">
+                <form action="/admin/tabs/delete/{{ t.id }}" method="POST" class="flex justify-end mt-2"
+                      onsubmit="return confirm('Voulez-vous vraiment supprimer cet onglet ?');">
                     <button type="submit" class="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-[11px] font-semibold">
                         <i class="fa-solid fa-trash mr-1"></i>Supprimer
                     </button>
@@ -107,37 +180,47 @@
             </div>
             {% endfor %}
 
-            <!-- Formulaire Nouvel Onglet -->
-            <form action="/admin/tabs/save" method="POST" class="p-4 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg border-2 border-dashed border-emerald-400 dark:border-emerald-700 space-y-3">
+            <!-- Nouvel Onglet -->
+            <form action="/admin/tabs/save" method="POST"
+                  class="p-4 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg border-2 border-dashed border-emerald-400 dark:border-emerald-700 space-y-3">
                 <input type="hidden" name="id" value="">
                 <h3 class="text-sm font-bold text-emerald-800 dark:text-emerald-400">
                     <i class="fa-solid fa-plus-circle mr-1"></i>Ajouter un nouvel onglet
                 </h3>
 
-                <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <div>
-                        <label class="block text-[10px] uppercase font-bold text-emerald-800 dark:text-emerald-400">Nom Interne</label>
-                        <input type="text" name="name" placeholder="ex: tomo2, nova" required class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                        <label class="block text-[10px] uppercase font-bold text-emerald-800 dark:text-emerald-400">Nom ARIA</label>
+                        <input type="text" name="name" placeholder="ex: tomo2, nova" required
+                               class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                     </div>
                     <div>
                         <label class="block text-[10px] uppercase font-bold text-emerald-800 dark:text-emerald-400">Libellé Affiché</label>
-                        <input type="text" name="label" placeholder="ex: Tomo 2, Nova" required class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                        <input type="text" name="label" placeholder="ex: Tomo 2, Nova" required
+                               class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                     </div>
                     <div>
                         <label class="block text-[10px] uppercase font-bold text-emerald-800 dark:text-emerald-400">Ordre</label>
-                        <input type="number" name="display_order" value="0" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
-                    </div>
-                    <div>
-                        <label class="block text-[10px] uppercase font-bold text-emerald-800 dark:text-emerald-400">Machines associées (CSV)</label>
-                        <input type="text" name="machines_csv" placeholder="ex: TOMO2 ou NOVA3, NOVA5" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                        <input type="number" name="display_order" value="0"
+                               class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                     </div>
                 </div>
 
                 <div>
                     <label class="block text-[10px] uppercase font-bold text-emerald-800 dark:text-emerald-400">
-                        <i class="fa-solid fa-folder-tree mr-1"></i>Dossiers Réseau Partagés NAS à inspecter (séparés par virgule)
+                        <i class="fa-solid fa-folder-tree mr-1"></i>Dossiers Réseau Partagés à inspecter (séparés par virgule)
                     </label>
-                    <input type="text" name="network_paths_csv" placeholder="ex: \\nasdata1\TOMO\02 - CQ Patients\0_DELTA4\TOMO2, \\srv015\..." class="w-full px-2 py-1.5 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono">
+                    <input type="text" name="network_paths_csv"
+                           placeholder="ex: \\nasdata1\TOMO\02 - CQ Patients\0_DELTA4\TOMO2, \\srv015\..."
+                           class="w-full px-2 py-1.5 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono">
+                </div>
+
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-emerald-800 dark:text-emerald-400">
+                        <i class="fa-solid fa-file-code mr-1"></i>Extension des fichiers à rechercher (séparés par virgule)
+                    </label>
+                    <input type="text" name="file_extensions_csv" value=".dcm, .pdf" placeholder=".dcm, .pdf"
+                           class="w-full px-2 py-1.5 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono">
                 </div>
 
                 <div class="flex justify-end pt-1">
@@ -149,84 +232,233 @@
         </div>
     </div>
 
-    <!-- Machines Configuration -->
+    <!-- ============================================================ -->
+    <!-- SECTION 4 : Techniques & Règles Temporelles                   -->
+    <!-- ============================================================ -->
     <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-6 border border-slate-200 dark:border-slate-700">
-        <h2 class="text-lg font-bold text-slate-900 dark:text-white mb-4"><i class="fa-solid fa-radiation text-amber-500 mr-2"></i>Machines & Règles de Calcul Temporel</h2>
+        <h2 class="text-lg font-bold text-slate-900 dark:text-white mb-4">
+            <i class="fa-solid fa-radiation text-amber-500 mr-2"></i>
+            Technique & Règles de Calcul Temporel
+        </h2>
+
+        <p class="text-xs text-slate-500 mb-4">
+            Définissez par <strong>Technique</strong> (ex: CQ Ruby, Octavius 4D, Hyperarc, Tomo)
+            le temps nécessaire pour sa réalisation.
+        </p>
 
         <div class="space-y-4">
+
             {% for m in machines %}
-            <div class="p-4 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700 grid grid-cols-1 md:grid-cols-7 gap-3 items-end">
+            <div class="p-4 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700 grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+
                 <form action="/admin/machines/save" method="POST" class="contents">
                     <input type="hidden" name="id" value="{{ m.id }}">
+
+                    <!-- 1. Technique -->
                     <div>
-                        <label class="block text-[10px] uppercase font-bold text-slate-500">Nom Interne</label>
-                        <input type="text" name="name" value="{{ m.name }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">
+                            Technique (mot clé ARIA)
+                        </label>
+                        <input type="text"
+                               name="name"
+                               value="{{ m.name }}"
+                               required
+                               class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                     </div>
+
+                    <!-- 2. Montage / démontage -->
                     <div>
-                        <label class="block text-[10px] uppercase font-bold text-slate-500">Libellé Affiché</label>
-                        <input type="text" name="label" value="{{ m.label }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">
+                            Montage / Démontage (durée en min)
+                        </label>
+                        <input type="number"
+                               name="label"
+                               value="{{ m.label }}"
+                               min="0"
+                               required
+                               class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                     </div>
+
+                    <!-- 3. Acquisition -->
                     <div>
-                        <label class="block text-[10px] uppercase font-bold text-slate-500">Ordre</label>
-                        <input type="number" name="display_order" value="{{ m.display_order }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">
+                            Acquisition (durée en min)
+                        </label>
+                        <input type="number"
+                               name="base_offset"
+                               value="{{ (m.duration_rules.base_offset if m.duration_rules else 7) or 7 }}"
+                               min="0"
+                               required
+                               class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                     </div>
+
+                    <!-- 4. Ordre : placé en dernière position avant Sauvegarder -->
                     <div>
-                        <label class="block text-[10px] uppercase font-bold text-slate-500">Base (min)</label>
-                        <input type="number" name="base_offset" value="{{ (m.duration_rules.base_offset if m.duration_rules else 7) or 7 }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                        <label class="block text-[10px] uppercase font-bold text-slate-500">
+                            Ordre
+                        </label>
+                        <input type="number"
+                               name="display_order"
+                               value="{{ m.display_order }}"
+                               min="0"
+                               class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                     </div>
+
+                    <!-- 5. Sauvegarde -->
                     <div>
-                        <label class="block text-[10px] uppercase font-bold text-slate-500">Par Cible (min)</label>
-                        <input type="number" name="per_target_offset" value="{{ (m.duration_rules.per_target_offset if m.duration_rules else 3) or 3 }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
-                    </div>
-                    <div>
-                        <label class="block text-[10px] uppercase font-bold text-slate-500">Durée Fixe (min)</label>
-                        <input type="number" name="fixed_duration" value="{{ (m.duration_rules.fixed_duration if m.duration_rules else 10) or 10 }}" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
-                    </div>
-                    <div>
-                        <button type="submit" class="w-full px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white rounded text-xs font-semibold">Sauvegarder</button>
+                        <button type="submit"
+                                class="w-full px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white rounded text-xs font-semibold">
+                            <i class="fa-solid fa-floppy-disk mr-1"></i>
+                            Sauvegarder
+                        </button>
                     </div>
                 </form>
-                <form action="/admin/machines/delete/{{ m.id }}" method="POST" class="md:col-span-7 flex justify-end" onsubmit="return confirm('Supprimer cette machine ?');">
-                    <button type="submit" class="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-[11px] font-semibold">
-                        <i class="fa-solid fa-trash mr-1"></i>Supprimer
+
+                <form action="/admin/machines/delete/{{ m.id }}"
+                      method="POST"
+                      class="md:col-span-5 flex justify-end"
+                      onsubmit="return confirm('Supprimer cette technique ?');">
+
+                    <button type="submit"
+                            class="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-[11px] font-semibold">
+                        <i class="fa-solid fa-trash mr-1"></i>
+                        Supprimer
                     </button>
                 </form>
             </div>
             {% endfor %}
 
-            <!-- Formulaire Nouvelle Machine -->
-            <form action="/admin/machines/save" method="POST" class="p-4 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg border-2 border-dashed border-emerald-400 dark:border-emerald-700 grid grid-cols-1 md:grid-cols-7 gap-3 items-end">
+            <!-- Ajout d'une nouvelle technique -->
+            <form action="/admin/machines/save"
+                  method="POST"
+                  class="p-4 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg border-2 border-dashed border-emerald-400 dark:border-emerald-700 grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+
                 <input type="hidden" name="id" value="">
+
+                <!-- 1. Technique -->
                 <div>
-                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Nom Interne</label>
-                    <input type="text" name="name" placeholder="ex: TrueBeam1" required class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">
+                        Technique (mot clé ARIA)
+                    </label>
+                    <input type="text"
+                           name="name"
+                           placeholder="ex: CQ Ruby, Octavius 4D, Hyperarc, Tomo"
+                           required
+                           class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                 </div>
+
+                <!-- 2. Montage / démontage -->
                 <div>
-                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Libellé Affiché</label>
-                    <input type="text" name="label" placeholder="ex: TrueBeam 1" required class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">
+                        Montage / Démontage (durée en min)
+                    </label>
+                    <input type="number"
+                           name="label"
+                           placeholder="ex: 5"
+                           min="0"
+                           required
+                           class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                 </div>
+
+                <!-- 3. Acquisition -->
                 <div>
-                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Ordre</label>
-                    <input type="number" name="display_order" value="0" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">
+                        Acquisition (durée en min)
+                    </label>
+                    <input type="number"
+                           name="base_offset"
+                           value="7"
+                           min="0"
+                           required
+                           class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                 </div>
+
+                <!-- 4. Ordre, avant le bouton -->
                 <div>
-                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Base (min)</label>
-                    <input type="number" name="base_offset" value="7" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">
+                        Ordre
+                    </label>
+                    <input type="number"
+                           name="display_order"
+                           value="0"
+                           min="0"
+                           class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                 </div>
+
+                <!-- 5. Ajouter -->
                 <div>
-                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Par Cible (min)</label>
-                    <input type="number" name="per_target_offset" value="3" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
-                </div>
-                <div>
-                    <label class="block text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">Durée Fixe (min)</label>
-                    <input type="number" name="fixed_duration" value="10" class="w-full px-2 py-1 text-xs border rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
-                </div>
-                <div>
-                    <button type="submit" class="w-full px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-semibold"><i class="fa-solid fa-plus mr-1"></i>Ajouter</button>
+                    <button type="submit"
+                            class="w-full px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-semibold">
+                        <i class="fa-solid fa-plus mr-1"></i>
+                        Ajouter
+                    </button>
                 </div>
             </form>
+
         </div>
     </div>
 
 </div>
+
+<script>
+    // Toggle MySQL password visibility
+    function togglePassword() {
+        const field = document.getElementById('mysql_password_field');
+        const icon = document.getElementById('pwd_eye_icon');
+        if (field.type === 'password') {
+            field.type = 'text';
+            icon.classList.remove('fa-eye');
+            icon.classList.add('fa-eye-slash');
+        } else {
+            field.type = 'password';
+            icon.classList.remove('fa-eye-slash');
+            icon.classList.add('fa-eye');
+        }
+    }
+
+    // Toggle Admin password visibility
+    function toggleAdminPassword() {
+        const field = document.getElementById('admin_password_field');
+        const icon = document.getElementById('admin_pwd_eye_icon');
+        if (field.type === 'password') {
+            field.type = 'text';
+            icon.classList.remove('fa-eye');
+            icon.classList.add('fa-eye-slash');
+        } else {
+            field.type = 'password';
+            icon.classList.remove('fa-eye-slash');
+            icon.classList.add('fa-eye');
+        }
+    }
+
+    // Test MySQL connection
+    function testDbConnection() {
+        const btn = document.getElementById('test-db-btn');
+        const result = document.getElementById('test-db-result');
+        btn.disabled = true;
+        btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin mr-2"></i>Test en cours...`;
+        result.innerText = '';
+        result.className = 'text-sm font-semibold';
+
+        fetch('/admin/test-db', { method: 'POST' })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    result.innerText = '✅ ' + data.message;
+                    result.classList.add('text-emerald-600');
+                } else {
+                    result.innerText = '❌ ' + data.message;
+                    result.classList.add('text-red-600');
+                }
+            })
+            .catch(err => {
+                result.innerText = '❌ Erreur réseau : ' + err;
+                result.classList.add('text-red-600');
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="fa-solid fa-plug mr-2"></i>Tester la connexion`;
+            });
+    }
+</script>
 {% endblock %}

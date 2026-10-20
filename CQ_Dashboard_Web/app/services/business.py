@@ -324,7 +324,7 @@ def build_dashboard_data(tab_name=None):
     if tab_key is None:
         return {'main_rows': [], 'prep_rows': [], 'counts': counts}
 
-    default_energy = Setting.get_val('DEFAULT_TOMO_ENERGY', '6FFF')
+    default_energy = '6FFF'  # Valeur par défaut fixe
 
     # --- Mise en forme pour le tableau web ---
     main_rows = []
@@ -391,7 +391,7 @@ def perform_network_scan():
                 all_paths.add(p.strip())
 
     found_count = 0
-    scandidos_sig = Setting.get_val('SCANDIDOS_SIGNATURE', '114358')
+    scandidos_sig = '114358'  # Signature Scandidos fixe
 
     for path in all_paths:
         if not os.path.exists(path):
