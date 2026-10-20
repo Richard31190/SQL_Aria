@@ -7,22 +7,15 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from sqlalchemy import create_engine, func, or_
 from sqlalchemy.orm import sessionmaker
-from app.models_local import Setting, CQTab, ScanCache, db_local
+from app.models_local import Setting, CQTab, CQMachine, ScanCache, db_local
 from app.models_aria import Patients, Careplans, Tasks, Appointments
 
-# ============================================================
-# Constantes (identiques à l'ancien config.py)
-# ============================================================
-LOOKBACK_DAYS = 14
-TAB_KEYS = ["tomo2", "tomo4", "tomo7", "nova"]
-WAITING_KEYS = {"tomo2": "Tomo 2", "tomo4": "Tomo 4", "tomo7": "Tomo 7", "nova": "Nova"}
-TAB_LABELS = {"tomo2": "Tomo 2", "tomo4": "Tomo 4", "tomo7": "Tomo 7", "nova": "Nova"}
-
 
 # ============================================================
-# Connexion MySQL (engine mis en cache, pas recréé à chaque requête)
+# Connexion MySQL (engine mis en cache)
 # ============================================================
 _ENGINE_CACHE = {}
+
 
 def get_mysql_engine():
     host = Setting.get_val('MYSQL_HOST', 'localhost')
@@ -39,9 +32,10 @@ def get_mysql_engine():
 
 
 # ============================================================
-# Utilitaires (copie de l'ancien config.py)
+# Utilitaires
 # ============================================================
 _HOLIDAY_CACHE = {}
+
 
 def french_holidays(year):
     if year in _HOLIDAY_CACHE:
@@ -90,7 +84,6 @@ def clean_cq_rows(rows):
 
 
 def row_color(met, now, limit):
-    """Même logique que ui.py : ⚪ pas de date, 🔴 en retard, 🟠 urgent, 🟢 ok"""
     if not met:
         return 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
     if met < now:
@@ -100,30 +93,27 @@ def row_color(met, now, limit):
     return 'bg-green-100 dark:bg-green-950/40 text-green-900 dark:text-green-200'
 
 
-def resolve_tab_key(tab_name):
-    """Convertit le nom (ou le libellé) d'un onglet en tomo2 / tomo4 / tomo7 / nova.
-    Renvoie None si l'onglet n'est pas reconnu (→ liste vide, et non tous les patients)."""
-    if not tab_name:
-        return "tomo2"
-    candidates = [tab_name]
-    tab = CQTab.query.filter_by(name=tab_name).first()
-    if tab:
-        candidates.append(tab.label or "")
-    for c in candidates:
-        key = re.sub(r'[^a-z0-9]', '', str(c).lower())
-        if 'tomo2' in key:
-            return 'tomo2'
-        if 'tomo4' in key:
-            return 'tomo4'
-        if 'tomo7' in key or 'radi7' in key:
-            return 'tomo7'
-        if any(k in key for k in ('nova', 'ruby', 'octa', 'halcyon')):
-            return 'nova'
+def find_tab_for_focus(focus_lower, tabs):
+    """Trouve l'onglet correspondant à un display_focus en cherchant
+    les mots-clés ARIA de chaque onglet dans la chaîne."""
+    for tab in tabs:
+        for kw in tab.get_aria_keywords():
+            if kw.lower() in focus_lower:
+                return tab
     return None
 
 
+def find_technique_duration(focus_lower, techniques):
+    """Trouve la durée d'acquisition correspondant à la technique
+    en cherchant le mot-clé ARIA de chaque technique dans le display_focus."""
+    for tech in techniques:
+        if tech.name.lower() in focus_lower:
+            return tech.get_acquisition()
+    return 15  # durée par défaut si aucune technique ne match
+
+
 # ============================================================
-# Requêtes SQL — portage EXACT de l'ancien database.py
+# Requêtes SQL ARIA (inchangées)
 # ============================================================
 def load_cq_patient_ids_today(session):
     today_start, today_end = day_bounds()
@@ -268,16 +258,19 @@ def load_cq_imminent_patients_fast(session, since):
 
 
 # ============================================================
-# Construction des données — même découpage que l'ancien build_dashboard_data
+# Construction des données — 100% DYNAMIQUE
 # ============================================================
 def build_dashboard_data(tab_name=None):
     now = datetime.now()
     limit = add_business_days(now, 2)
-    since = now - timedelta(days=LOOKBACK_DAYS)
+    lookback = int(Setting.get_val('LOOKBACK_DAYS', '14'))
+    since = now - timedelta(days=lookback)
 
-    tab_key = resolve_tab_key(tab_name)
-    lists = {k: [] for k in TAB_KEYS}
-    waiting = {k: [] for k in TAB_KEYS}
+    tabs = CQTab.query.order_by(CQTab.display_order).all()
+    techniques = CQMachine.query.order_by(CQMachine.display_order).all()
+
+    lists = {tab.label: [] for tab in tabs}
+    waiting = {tab.label: [] for tab in tabs}
 
     session = sessionmaker(bind=get_mysql_engine())()
     try:
@@ -285,76 +278,90 @@ def build_dashboard_data(tab_name=None):
         ready_rows = load_cq_ready_patients_fast(session, since)
         imminent = load_cq_imminent_patients_fast(session, since)
 
-        # --- Répartition "en préparation" selon le Workflow (cp.title) ---
+        # === DEBUG ===
+        print(f"[DEBUG] {len(ready_rows)} patients CQ ready trouvés dans ARIA")
+        print(f"[DEBUG] {len(imminent)} patients imminents trouvés dans ARIA")
+        print(f"[DEBUG] Onglets configurés :")
+        for tab in tabs:
+            print(f"   - label='{tab.label}' | keywords={tab.get_aria_keywords()}")
+        # =============
+
         for r in imminent:
             w = str(r.get("Workflow") or "").lower()
-            k = "tomo2" if "tomo 2" in w else "tomo4" if "tomo 4" in w else "tomo7" if "tomo 7" in w else "nova"
-            waiting[k].append(r)
+            matched_tab = find_tab_for_focus(w, tabs)
+            if matched_tab:
+                waiting[matched_tab.label].append(r)
 
-        # --- Timeplanner + nettoyage ---
         for r in ready_rows:
             r["Timeplanner"] = r["patient_id"] in cq_ids_today
         cq_rows = clean_cq_rows(ready_rows)
 
-        # --- Répartition EXCLUSIVE (if / elif) comme l'ancien programme ---
-        for r in cq_rows:
-            f = str(r.get("task_display_focus")).lower()
-            if "tomo 2" in f:
-                lists["tomo2"].append(r)
-            elif "tomo 4" in f:
-                lists["tomo4"].append(r)
-            elif "tomo 7" in f:
-                lists["tomo7"].append(r)
-            elif "ruby" in f or "octa" in f:
-                lists["nova"].append(r)
-            # sinon : ignoré (comme avant)
+        # === DEBUG ===
+        print(f"[DEBUG] {len(cq_rows)} patients après nettoyage (clean_cq_rows)")
+        # =============
 
-        for k in TAB_KEYS:
-            lists[k] = sort_by_met_start(lists[k])
+        unmatched = []
+        for r in cq_rows:
+            focus = str(r.get("task_display_focus") or "").lower()
+            matched_tab = find_tab_for_focus(focus, tabs)
+            if matched_tab:
+                lists[matched_tab.label].append(r)
+            else:
+                unmatched.append(focus)
+
+        # === DEBUG ===
+        if unmatched:
+            print(f"[DEBUG] ⚠️ {len(unmatched)} patients NON RATTACHÉS à un onglet :")
+            for u in unmatched[:10]:
+                print(f"   - '{u}'")
+        else:
+            print(f"[DEBUG] ✅ Tous les patients rattachés à un onglet")
+        # =============
+
+        for label in lists:
+            lists[label] = sort_by_met_start(lists[label])
 
     except Exception as e:
         print(f"Error executing ARIA MySQL query: {e}")
     finally:
         session.close()
 
-    counts = {k: len(v) for k, v in lists.items()}
-    print(f"[CQ] {datetime.now():%H:%M:%S} Tomo2={counts['tomo2']} Tomo4={counts['tomo4']} "
-          f"Tomo7={counts['tomo7']} Nova={counts['nova']} | onglet demandé='{tab_name}' → {tab_key}")
+    counts = {label: len(rows) for label, rows in lists.items()}
+    print(f"[CQ] {datetime.now():%H:%M:%S} Counts={counts} | onglet demandé='{tab_name}'")
 
-    if tab_key is None:
+    active_tab = None
+    if tab_name:
+        for tab in tabs:
+            if tab.label.lower() == tab_name.lower():
+                active_tab = tab
+                break
+    if not active_tab and tabs:
+        active_tab = tabs[0]
+
+    if not active_tab:
         return {'main_rows': [], 'prep_rows': [], 'counts': counts}
 
-    default_energy = '6FFF'  # Valeur par défaut fixe
-
-    # --- Mise en forme pour le tableau web ---
     main_rows = []
-    for r in lists[tab_key]:
+    for r in lists[active_tab.label]:
         met = r["met_start"]
         ipp = str(r.get("ipp") or r.get("patient_id") or "")
         focus = str(r.get("task_display_focus") or "")
-        fl = focus.lower()
+        focus_lower = focus.lower()
 
-        # Durée estimée par ligne (même logique que on_tab_changed de ui.py, hors offset initial)
-        if "tomo" in fl:
-            duration = 3
-        elif "ruby" in fl:
-            duration = 12
-        elif "octa" in fl:
-            duration = 9
-        else:
-            duration = 15
+        duration = find_technique_duration(focus_lower, techniques)
+        energy = active_tab.get_default_energy()
 
         main_rows.append({
             'patient_id': ipp,
             'last_name': str(r.get("last_name") or "").upper(),
             'first_name': str(r.get("first_name") or ""),
-            'machine': TAB_LABELS[tab_key],
+            'machine': active_tab.label,
             'scheduled_time': met.strftime('%H:%M') if met else '',
             'met_date': met.strftime('%Y-%m-%d %H:%M') if met else '',
             'met_color': row_color(met, now, limit),
             'scandidos': '✅' if ScanCache.query.filter_by(patient_id=ipp, file_type='DICOM').first() else '❌',
             'pdf': '✅' if ScanCache.query.filter_by(patient_id=ipp, file_type='PDF').first() else '❌',
-            'energy': default_energy if tab_key != 'nova' else '',
+            'energy': energy,
             'technique': focus,
             'status': str(r.get("task_status") or ""),
             'base_duration': duration,
@@ -364,7 +371,7 @@ def build_dashboard_data(tab_name=None):
         })
 
     prep_rows = []
-    for p in waiting[tab_key]:
+    for p in waiting[active_tab.label]:
         val = p.get("validation_date")
         met = p.get("met_start")
         prep_rows.append({
@@ -379,78 +386,63 @@ def build_dashboard_data(tab_name=None):
 
 
 # ============================================================
-# Scan réseau NAS (inchangé)
+# Scan réseau NAS — 100% DYNAMIQUE
 # ============================================================
 def perform_network_scan():
-    """Scanne tous les dossiers réseau définis dans chaque onglet (DICOM & PDF dans les mêmes dossiers)."""
+    """Scanne les dossiers réseau de chaque onglet avec ses extensions configurées."""
     tabs = CQTab.query.all()
-    all_paths = set()
-    for tab in tabs:
-        for p in tab.get_network_paths():
-            if p:
-                all_paths.add(p.strip())
+    scan_depth = int(Setting.get_val('SCAN_DEPTH', '3'))
+    scandidos_sig = Setting.get_val('SCANDIDOS_SIGNATURE', '114358')
 
     found_count = 0
-    scandidos_sig = '114358'  # Signature Scandidos fixe
 
-    for path in all_paths:
-        if not os.path.exists(path):
-            continue
-        try:
-            for root, dirs, files in os.walk(path):
-                # Limite de profondeur à 3 sous-dossiers (comme dans l'ancien programme)
-                depth = root[len(path):].count(os.sep)
-                if depth >= 3:
-                    dirs.clear()
+    for tab in tabs:
+        extensions = [e.strip().lower() for e in tab.get_file_extensions()]
+        paths = tab.get_network_paths()
 
-                for f in files:
-                    file_path = os.path.join(root, f)
-                    lower_f = f.lower()
+        for path in paths:
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                for root, dirs, files in os.walk(path):
+                    depth = root[len(path):].count(os.sep)
+                    if depth >= scan_depth:
+                        dirs.clear()
 
-                    # 1. RAPPORTS PDF
-                    if lower_f.endswith('.pdf'):
-                        patient_id = f.split('_')[0] if '_' in f else os.path.splitext(f)[0]
-                        patient_id = patient_id.strip()
-                        if patient_id and not ScanCache.query.filter_by(patient_id=patient_id, file_type='PDF').first():
-                            db_local.session.add(ScanCache(
-                                patient_id=patient_id,
-                                file_type='PDF',
-                                file_name=f,
-                                file_path=file_path,
-                                last_modified=datetime.fromtimestamp(os.path.getmtime(file_path))
-                            ))
-                            found_count += 1
+                    for f in files:
+                        file_path = os.path.join(root, f)
+                        ext = os.path.splitext(f)[1].lower()
 
-                    # 2. FICHIERS DICOM / SCANDIDOS / XML / JSON
-                    elif lower_f.endswith('.dcm') or lower_f.endswith('.xml') or lower_f.endswith('.json') or ('.' in f and f.replace('.', '').isdigit()):
-                        try:
-                            patient_id = None
-                            if lower_f.endswith('.dcm'):
-                                # L'IPP est souvent le nom du dossier parent ou le préfixe
-                                parent_name = os.path.basename(root)
-                                patient_id = parent_name if parent_name and any(c.isdigit() for c in parent_name) else f.split('_')[0]
-                            elif lower_f.endswith('.xml'):
-                                tree = ET.parse(file_path)
-                                root_xml = tree.getroot()
-                                xml_str = ET.tostring(root_xml, encoding='utf-8').decode('utf-8', errors='ignore')
-                                if scandidos_sig.lower() in xml_str.lower():
-                                    elem = root_xml.find('.//PatientID')
-                                    if elem is not None and elem.text:
-                                        patient_id = elem.text.strip()
-                            elif lower_f.endswith('.json'):
-                                with open(file_path, 'r', encoding='utf-8', errors='ignore') as jf:
-                                    data = json.load(jf)
-                                    if scandidos_sig.lower() in json.dumps(data).lower():
-                                        patient_id = data.get('PatientID') or data.get('patient_id')
-                            else:
-                                # Scandidos brut sans extension : recherche dans le dossier parent
-                                parent_name = os.path.basename(root)
-                                if parent_name and any(c.isdigit() for c in parent_name):
-                                    patient_id = parent_name
+                        # Vérifier si l'extension est dans la liste de l'onglet
+                        if ext not in extensions:
+                            continue
 
+                        lower_f = f.lower()
+
+                        # --- PDF ---
+                        if ext == '.pdf':
+                            patient_id = f.split('_')[0] if '_' in f else os.path.splitext(f)[0]
+                            patient_id = patient_id.strip()
+                            if patient_id and not ScanCache.query.filter_by(
+                                    patient_id=patient_id, file_type='PDF').first():
+                                db_local.session.add(ScanCache(
+                                    patient_id=patient_id,
+                                    file_type='PDF',
+                                    file_name=f,
+                                    file_path=file_path,
+                                    last_modified=datetime.fromtimestamp(os.path.getmtime(file_path))
+                                ))
+                                found_count += 1
+
+                        # --- DICOM / autres extensions ---
+                        elif ext == '.dcm':
+                            parent_name = os.path.basename(root)
+                            patient_id = parent_name if parent_name and any(
+                                c.isdigit() for c in parent_name) else f.split('_')[0]
                             if patient_id:
                                 patient_id = str(patient_id).strip()
-                                if not ScanCache.query.filter_by(patient_id=patient_id, file_type='DICOM').first():
+                                if not ScanCache.query.filter_by(
+                                        patient_id=patient_id, file_type='DICOM').first():
                                     db_local.session.add(ScanCache(
                                         patient_id=patient_id,
                                         file_type='DICOM',
@@ -459,10 +451,54 @@ def perform_network_scan():
                                         last_modified=datetime.fromtimestamp(os.path.getmtime(file_path))
                                     ))
                                     found_count += 1
-                        except Exception:
-                            continue
-        except Exception as e:
-            print(f"[SCAN] Erreur scan {path}: {e}")
+
+                        # --- XML (Scandidos) ---
+                        elif ext == '.xml':
+                            try:
+                                tree = ET.parse(file_path)
+                                root_xml = tree.getroot()
+                                xml_str = ET.tostring(root_xml, encoding='utf-8').decode('utf-8', errors='ignore')
+                                if scandidos_sig.lower() in xml_str.lower():
+                                    elem = root_xml.find('.//PatientID')
+                                    if elem is not None and elem.text:
+                                        patient_id = elem.text.strip()
+                                        if not ScanCache.query.filter_by(
+                                                patient_id=patient_id, file_type='DICOM').first():
+                                            db_local.session.add(ScanCache(
+                                                patient_id=patient_id,
+                                                file_type='DICOM',
+                                                file_name=f,
+                                                file_path=file_path,
+                                                last_modified=datetime.fromtimestamp(os.path.getmtime(file_path))
+                                            ))
+                                            found_count += 1
+                            except Exception:
+                                continue
+
+                        # --- JSON (Scandidos) ---
+                        elif ext == '.json':
+                            try:
+                                with open(file_path, 'r', encoding='utf-8', errors='ignore') as jf:
+                                    data = json.load(jf)
+                                    if scandidos_sig.lower() in json.dumps(data).lower():
+                                        patient_id = data.get('PatientID') or data.get('patient_id')
+                                        if patient_id:
+                                            patient_id = str(patient_id).strip()
+                                            if not ScanCache.query.filter_by(
+                                                    patient_id=patient_id, file_type='DICOM').first():
+                                                db_local.session.add(ScanCache(
+                                                    patient_id=patient_id,
+                                                    file_type='DICOM',
+                                                    file_name=f,
+                                                    file_path=file_path,
+                                                    last_modified=datetime.fromtimestamp(os.path.getmtime(file_path))
+                                                ))
+                                                found_count += 1
+                            except Exception:
+                                continue
+
+            except Exception as e:
+                print(f"[SCAN] Erreur scan {path}: {e}")
 
     db_local.session.commit()
     return found_count

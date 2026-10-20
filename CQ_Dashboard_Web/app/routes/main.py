@@ -8,7 +8,8 @@ main_bp = Blueprint('main', __name__)
 @main_bp.route('/')
 def index():
     tabs = CQTab.query.order_by(CQTab.display_order).all()
-    default_tab = tabs[0].name if tabs else ''
+    # Utiliser le label (libellé affiché) comme identifiant, pas le name (mots-clés ARIA)
+    default_tab = tabs[0].label if tabs else ''
     return render_template('dashboard.html', tabs=[t.to_dict() for t in tabs], default_tab=default_tab)
 
 @main_bp.route('/api/data')

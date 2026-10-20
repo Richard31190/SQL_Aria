@@ -8,9 +8,8 @@ from app.models_local import db_local, Setting, CQTab, CQMachine
 
 admin_bp = Blueprint('admin', __name__)
 
-# Clés affectées à chaque section de l'admin
 DB_KEYS = ['MYSQL_HOST', 'MYSQL_PORT', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DB']
-GLOBAL_KEYS = ['ADMIN_PASSWORD']
+GLOBAL_KEYS = ['ADMIN_PASSWORD', 'LOOKBACK_DAYS', 'SCAN_DEPTH', 'SCANDIDOS_SIGNATURE']
 
 
 @admin_bp.before_request
@@ -63,14 +62,15 @@ def update_settings():
 
 @admin_bp.route('/test-db', methods=['POST'])
 def test_db():
-    """Teste la connexion MySQL avec les paramètres actuellement enregistrés."""
     try:
         from app.services.business import get_mysql_engine
+        # Vider le cache pour forcer une nouvelle connexion avec les params actuels
+        from app.services import business
+        business._ENGINE_CACHE.clear()
+
         engine = get_mysql_engine()
         with engine.connect() as conn:
-            # Test simple
             conn.execute(text("SELECT 1"))
-            # On tente de compter les patients pour valider que la base est bien celle d'ARIA
             try:
                 res = conn.execute(text("SELECT COUNT(*) FROM patients")).scalar()
                 return jsonify({
@@ -95,6 +95,7 @@ def save_tab():
 
     network_paths_csv = request.form.get('network_paths_csv', '')
     file_extensions_csv = request.form.get('file_extensions_csv', '.dcm, .pdf')
+    default_energy = request.form.get('default_energy', '').strip()
 
     network_paths = [p.strip() for p in network_paths_csv.split(',') if p.strip()]
     file_extensions = [e.strip().lower() if e.strip().startswith('.') else '.' + e.strip().lower()
@@ -108,7 +109,11 @@ def save_tab():
     tab.name = name
     tab.label = label
     tab.display_order = int(order)
-    tab.set_config(network_paths=network_paths, file_extensions=file_extensions)
+    tab.set_config(
+        network_paths=network_paths,
+        file_extensions=file_extensions,
+        default_energy=default_energy
+    )
 
     db_local.session.add(tab)
     db_local.session.commit()
@@ -129,9 +134,9 @@ def delete_tab(tab_id):
 def save_machine():
     m_id = request.form.get('id')
     name = request.form.get('name')
-    label = request.form.get('label')  # devient "Montage/Démontage (min)"
+    mount_unmount = request.form.get('label', '0')
     order = request.form.get('display_order', 0)
-    base_offset = int(request.form.get('base_offset', 7))  # devient "Acquisition (min)"
+    acquisition = request.form.get('base_offset', '15')
 
     if m_id:
         m = CQMachine.query.get(m_id)
@@ -139,16 +144,16 @@ def save_machine():
         m = CQMachine()
 
     m.name = name
-    m.label = str(label)
+    m.label = str(mount_unmount)
     m.display_order = int(order)
     m.set_duration_rules({
-        'base_offset': base_offset,  # Acquisition
-        'mount_unmount': int(label) if str(label).isdigit() else 0  # Montage/Démontage
+        'acquisition': int(acquisition) if str(acquisition).isdigit() else 15,
+        'mount_unmount': int(mount_unmount) if str(mount_unmount).isdigit() else 0
     })
 
     db_local.session.add(m)
     db_local.session.commit()
-    flash('Type de CQ sauvegardé', 'success')
+    flash('Technique sauvegardée', 'success')
     return redirect(url_for('admin.index'))
 
 
@@ -157,7 +162,7 @@ def delete_machine(m_id):
     m = CQMachine.query.get_or_404(m_id)
     db_local.session.delete(m)
     db_local.session.commit()
-    flash('Type de CQ supprimé', 'success')
+    flash('Technique supprimée', 'success')
     return redirect(url_for('admin.index'))
 
 

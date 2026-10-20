@@ -9,7 +9,7 @@
         <!-- Dynamic Dynamic Machine Tabs -->
         <div class="flex flex-wrap gap-2" id="tab-container">
             {% for tab in tabs %}
-            <button data-tab="{{ tab.name }}"
+            <button data-tab="{{ tab.label }}"
                     class="tab-btn px-4 py-2 rounded-lg text-sm font-semibold transition-all border border-slate-300 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 {% if loop.first %}bg-cyan-600 text-white dark:bg-cyan-600 border-cyan-600 active-tab{% endif %}">
                 <i class="fa-solid fa-desktop mr-1.5"></i> {{ tab.label }} <span class="tab-count opacity-75"></span>
             </button>
@@ -97,18 +97,14 @@
     let activeTab = "{{ default_tab }}";
 
     function loadData() {
-        fetch(`/api/data?tab=${activeTab}&_t=${Date.now()}`)
+        fetch(`/api/data?tab=${encodeURIComponent(activeTab)}&_t=${Date.now()}`)
             .then(res => res.json())
             .then(data => {
                 renderTable(data.main_rows);
                 renderPrepTable(data.prep_rows);
-                const keyOf = n => {
-                    const k = n.toLowerCase().replace(/[^a-z0-9]/g, '');
-                    return k.includes('tomo2') ? 'tomo2' : k.includes('tomo4') ? 'tomo4'
-                        : (k.includes('tomo7') || k.includes('radi7')) ? 'tomo7' : 'nova';
-                };
+                // Les counts sont indexés par label d'onglet (dynamique)
                 document.querySelectorAll('.tab-btn').forEach(b => {
-                    const c = (data.counts || {})[keyOf(b.dataset.tab)];
+                    const c = (data.counts || {})[b.dataset.tab];
                     b.querySelector('.tab-count').innerText = c !== undefined ? `(${c})` : '';
                 });
             });
@@ -119,7 +115,7 @@
         tbody.innerHTML = '';
 
         if (!rows || rows.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="13" class="p-4 text-center text-slate-500">Aucun rendez-vous trouve.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="13" class="p-4 text-center text-slate-500">Aucun rendez-vous trouvé.</td></tr>`;
             return;
         }
 
@@ -164,7 +160,7 @@
         });
     }
 
-    // Dynamic Tab Switching
+    // Tab Switching
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             document.querySelectorAll('.tab-btn').forEach(b => {
@@ -179,20 +175,18 @@
 
     // Toggle Preparation Panel
     document.getElementById('prep-header').addEventListener('click', function() {
-        const body = document.getElementById('prep-body');
-        const chevron = document.getElementById('prep-chevron');
-        body.classList.toggle('hidden');
-        chevron.classList.toggle('rotate-180');
+        document.getElementById('prep-body').classList.toggle('hidden');
+        document.getElementById('prep-chevron').classList.toggle('rotate-180');
     });
 
-    // Manual Network Scan Trigger
+    // Scan NAS
     document.getElementById('scan-btn').addEventListener('click', function() {
         this.disabled = true;
         this.innerHTML = `<i class="fa-solid fa-spinner fa-spin mr-2"></i> Scan en cours...`;
         fetch('/api/scan', { method: 'POST' })
             .then(res => res.json())
             .then(res => {
-                alert(`Scan termine: ${res.found_new} nouveaux fichiers detectes.`);
+                alert(`Scan terminé: ${res.found_new} nouveaux fichiers détectés.`);
                 loadData();
             })
             .finally(() => {
@@ -203,7 +197,6 @@
 
     document.getElementById('refresh-btn').addEventListener('click', loadData);
 
-    // Initial Load & Auto Refresh every 60 seconds
     loadData();
     setInterval(loadData, 60000);
 </script>
