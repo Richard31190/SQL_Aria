@@ -1,541 +1,617 @@
 # *** services\business.py ***
+# -*- coding: utf-8 -*-
+"""
+CQ Dashboard — Logique Métier Précise & Filtrée
+- Connexion MySQL ARIA (tasks, careplans, patients, appointments, prescriptions)
+- Config SQLite (CQTab, CQMachine, ScanCache, Setting)
+- Anti-doublons SQL & Détection stricte des mots-clés
+"""
 import os
 import re
 import json
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
-from collections import defaultdict
-from sqlalchemy import create_engine, func, or_
-from sqlalchemy.orm import sessionmaker
-from app.models_local import Setting, CQTab, CQMachine, ScanCache, db_local
-from app.models_aria import Patients, Careplans, Tasks, Appointments
+import unicodedata
+from datetime import datetime, date, timedelta
+
+from app.models_local import db_local, CQTab, CQMachine, ScanCache, Setting
+
+# Driver MySQL
+_MYSQL_DRIVER = None
+try:
+    import mysql.connector as _mysql_connector
+    _MYSQL_DRIVER = "connector"
+except ImportError:
+    try:
+        import pymysql as _pymysql
+        from pymysql.cursors import DictCursor as _DictCursor
+        _MYSQL_DRIVER = "pymysql"
+    except ImportError:
+        _MYSQL_DRIVER = None
 
 
-# ============================================================
-# Connexion MySQL (engine mis en cache)
-# ============================================================
-_ENGINE_CACHE = {}
+GLOBAL_KEYS = [
+    "ADMIN_PASSWORD",
+    "LOOKBACK_DAYS",
+    "SCAN_DEPTH",
+    "SCANDIDOS_SIGNATURE",
+    "YEAR_OVERLAP_DAYS",
+]
 
 
-def get_mysql_engine():
-    host = Setting.get_val('MYSQL_HOST', 'localhost')
-    port = Setting.get_val('MYSQL_PORT', '3306')
-    user = Setting.get_val('MYSQL_USER', 'root')
-    pwd = Setting.get_val('MYSQL_PASSWORD', '')
-    dbname = Setting.get_val('MYSQL_DB', 'db_iuct')
-    conn_str = f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{dbname}"
-    if conn_str not in _ENGINE_CACHE:
-        _ENGINE_CACHE[conn_str] = create_engine(
-            conn_str, pool_pre_ping=True, pool_recycle=1800, pool_size=2, max_overflow=2
-        )
-    return _ENGINE_CACHE[conn_str]
+# ===========================================================================
+# Helpers & Normalisation
+# ===========================================================================
+
+def normalize(text: str) -> str:
+    """Minuscules, sans accents, sans espaces ni ponctuation."""
+    if not text:
+        return ""
+    text = str(text).lower()
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    text = re.sub(r"[^a-z0-9]", "", text)
+    return text
 
 
-# ============================================================
-# Utilitaires
-# ============================================================
-_HOLIDAY_CACHE = {}
+def match_tab_keyword(keyword: str, text: str) -> bool:
+    """
+    Vérifie si 'keyword' est présent dans 'text'.
+    Si keyword fait 3 lettres ou moins (ex: 'ra', 'stec'), exige un mot entier
+    pour éviter que 'ra' ne matche 'radiothérapie'.
+    """
+    if not keyword or not text:
+        return False
+    
+    norm_kw = normalize(keyword)
+    norm_text = normalize(text)
+    if not norm_kw or not norm_text:
+        return False
+
+    # Mot-clé très court (ex: 'ra', 't2') -> Mot entier requis
+    if len(norm_kw) <= 3:
+        clean_text = unicodedata.normalize("NFD", text.lower())
+        clean_text = "".join(c for c in clean_text if unicodedata.category(c) != "Mn")
+        words = re.findall(r"\b[a-z0-9]+\b", clean_text)
+        return norm_kw in words
+
+    return norm_kw in norm_text
 
 
-def french_holidays(year):
-    if year in _HOLIDAY_CACHE:
-        return _HOLIDAY_CACHE[year]
-    a, b, c = year % 19, year // 100, year % 100
-    d, e, f = b // 4, b % 4, (b + 8) // 25
-    g = (b - f + 1) // 3
-    h = (19 * a + b - d - g + 15) % 30
-    i, k = c // 4, c % 4
-    ll = (32 + 2 * e + 2 * i - h - k) % 7
-    m = (a + 11 * h + 22 * ll) // 451
-    month, day = (h + ll - 7 * m + 114) // 31, ((h + ll - 7 * m + 114) % 31) + 1
-    from datetime import date
-    easter = date(year, month, day)
-    days = {
-        date(year, 1, 1), easter + timedelta(days=1), date(year, 5, 1),
-        date(year, 5, 8), easter + timedelta(days=39), easter + timedelta(days=50),
-        date(year, 7, 14), date(year, 8, 15), date(year, 11, 1),
-        date(year, 11, 11), date(year, 12, 25),
+def get_global_settings() -> dict:
+    defaults = {
+        'ADMIN_PASSWORD': 'admin',
+        'LOOKBACK_DAYS': '14',
+        'SCAN_DEPTH': '3',
+        'SCANDIDOS_SIGNATURE': '114358',
+        'YEAR_OVERLAP_DAYS': '15',
+        'MYSQL_HOST': 'localhost',
+        'MYSQL_PORT': '3306',
+        'MYSQL_USER': 'root',
+        'MYSQL_PASSWORD': '',
+        'MYSQL_DB': 'db_iuct',
     }
-    _HOLIDAY_CACHE[year] = days
-    return days
+    rows = Setting.query.all()
+    setting_map = {r.key: r.value for r in rows if r.key}
+    for k, v in defaults.items():
+        if k not in setting_map or setting_map[k] is None:
+            setting_map[k] = v
+    return setting_map
 
 
-def add_business_days(start_date, days):
-    current, added = start_date, 0
-    while added < days:
-        current += timedelta(days=1)
-        if current.weekday() < 5 and current.date() not in french_holidays(current.year):
-            added += 1
-    return current
+def get_aria_mysql_config() -> dict:
+    s = get_global_settings()
+    return {
+        'host': s.get('MYSQL_HOST', 'localhost'),
+        'port': int(s.get('MYSQL_PORT', 3306) or 3306),
+        'user': s.get('MYSQL_USER', 'root'),
+        'password': s.get('MYSQL_PASSWORD', ''),
+        'database': s.get('MYSQL_DB', 'db_iuct'),
+    }
 
 
-def day_bounds(reference=None):
-    reference = reference or datetime.now()
-    start = reference.replace(hour=0, minute=0, second=0, microsecond=0)
-    return start, start + timedelta(days=1)
+def get_mysql_connection(cfg: dict = None):
+    if cfg is None:
+        cfg = get_aria_mysql_config()
+
+    if _MYSQL_DRIVER == "connector":
+        conn = _mysql_connector.connect(
+            host=cfg.get("host"),
+            user=cfg.get("user"),
+            password=cfg.get("password"),
+            database=cfg.get("database"),
+            port=int(cfg.get("port", 3306)),
+        )
+        return conn, conn.cursor(dictionary=True)
+
+    if _MYSQL_DRIVER == "pymysql":
+        conn = _pymysql.connect(
+            host=cfg.get("host"),
+            user=cfg.get("user"),
+            password=cfg.get("password"),
+            database=cfg.get("database"),
+            port=int(cfg.get("port", 3306)),
+            cursorclass=_DictCursor,
+            charset="utf8mb4",
+        )
+        return conn, conn.cursor()
+
+    raise RuntimeError("Aucun driver MySQL (mysql-connector-python ou pymysql).")
 
 
-def sort_by_met_start(table):
-    return sorted(table, key=lambda r: (r["met_start"] is None, r["met_start"] or datetime.max))
+def extract_ipp_candidates(text: str) -> list:
+    if not text:
+        return []
+    return list(set(re.findall(r"\b\d{5,}\b", str(text))))
 
 
-def clean_cq_rows(rows):
-    return [r for r in rows if str(r.get("task_status") or "").lower() not in ["completed", "draft"]]
-
-
-def row_color(met, now, limit):
-    if not met:
-        return 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-    if met < now:
-        return 'bg-red-100 dark:bg-red-950/40 text-red-900 dark:text-red-200'
-    if met <= limit:
-        return 'bg-orange-100 dark:bg-orange-950/40 text-orange-900 dark:text-orange-200'
-    return 'bg-green-100 dark:bg-green-950/40 text-green-900 dark:text-green-200'
-
-
-def find_tab_for_focus(focus_lower, tabs):
-    """Trouve l'onglet correspondant à un display_focus en cherchant
-    les mots-clés ARIA de chaque onglet dans la chaîne.
-    Matching insensible aux espaces : 'Tomo2' matche 'tomo 2'."""
-    focus_norm = normalize(focus_lower)
+def find_tab_for_focus(focus_text: str, tabs: list):
+    """Associe une tâche à un onglet selon les mots-clés ARIA de l'onglet."""
+    if not focus_text:
+        return None
     for tab in tabs:
-        for kw in tab.get_aria_keywords():
-            if normalize(kw) in focus_norm:
+        aria_names = tab.get_aria_keywords() if hasattr(tab, 'get_aria_keywords') else [x.strip() for x in (tab.name or "").split(",") if x.strip()]
+        for kw in aria_names:
+            if match_tab_keyword(kw, focus_text):
                 return tab
     return None
 
-def normalize(text):
-    """Supprime les espaces et met en minuscule pour le matching."""
-    return re.sub(r'\s+', '', text.lower())
 
-def find_technique_rules(focus_lower, techniques):
-    """Trouve les règles temporelles correspondant à la technique.
-    Retourne : (acquisition, montage, nom_technique)"""
-    focus_norm = normalize(focus_lower)
-    for tech in techniques:
-        if normalize(tech.name) in focus_norm:
-            return tech.get_acquisition(), tech.get_mount_unmount(), tech.name
-    return 15, 0, "Défaut"  # Valeurs si aucune technique ne matche
-
-# ============================================================
-# Requêtes SQL ARIA (inchangées)
-# ============================================================
-def load_cq_patient_ids_today(session):
-    today_start, today_end = day_bounds()
-    return {row[0] for row in session.query(Appointments.patient_id).filter(
-        Appointments.start_scheduled_period >= today_start,
-        Appointments.start_scheduled_period < today_end,
-        Appointments.service_type.ilike("%cq patient%"),
-        ~func.lower(Appointments.status).in_(["cancelled", "fulfilled"]),
-    ).all() if row[0]}
+def find_technique_rules(task_text: str, machines: list) -> dict:
+    norm_task = normalize(task_text)
+    for m in machines:
+        kw = normalize(m.name)
+        if kw and kw in norm_task:
+            return {
+                "technique_name": m.name,
+                "mount_unmount": int(m.get_mount_unmount() or 0),
+                "acquisition": int(m.get_acquisition() or 15),
+            }
+    return {
+        "technique_name": (task_text or "CQ Standard")[:80],
+        "mount_unmount": 10,
+        "acquisition": 15,
+    }
 
 
-def load_cq_ready_patients_fast(session, since):
-    tasks = session.query(Tasks).filter(
-        or_(
-            Tasks.display_focus.ilike("réalisation du cq%"),
-            Tasks.display_focus.ilike("réalisation des cq%"),
-            Tasks.display_focus.ilike("replanif%"),
-        ),
-        Tasks.last_updated >= since,
-        Tasks.status.ilike("ready"),
-    ).all()
-
-    if not tasks:
-        return []
-
-    careplan_ids = {t.careplan_id for t in tasks if t.careplan_id}
-    careplans = session.query(Careplans).filter(Careplans.id.in_(careplan_ids)).all()
-    patient_ids = {cp.patient_id for cp in careplans if cp.patient_id}
-    if not patient_ids:
-        return []
-    patients = session.query(Patients).filter(Patients.id.in_(patient_ids)).all()
-    patient_dict = {p.id: p for p in patients}
-
-    mets = session.query(Appointments).filter(
-        Appointments.patient_id.in_(patient_ids),
-        Appointments.service_type.ilike("MET%"),
-        ~func.lower(Appointments.status).in_(["cancelled"]),
-    ).all()
-    patient_mets = defaultdict(list)
-    for m in mets:
-        patient_mets[m.patient_id].append(m)
-
-    fin_tasks = session.query(Tasks).filter(
-        Tasks.careplan_id.in_(careplan_ids),
-        Tasks.display_focus.ilike("finalisation du dossier%"),
-    ).all()
-    cp_physicists = {ft.careplan_id: (ft.recipient or ft.recipient_id) for ft in fin_tasks}
-
-    rows = []
-    for cp in careplans:
-        p = patient_dict.get(cp.patient_id)
-        if not p:
-            continue
-        met_dates = [m.start_scheduled_period for m in patient_mets.get(p.id, []) if m.start_scheduled_period]
-        met_start = max(met_dates, default=None)
-        physicist = cp_physicists.get(cp.id)
-
-        for t in [t for t in tasks if t.careplan_id == cp.id]:
-            rows.append({
-                "ipp": p.ipp,
-                "last_name": p.family_name_official,
-                "first_name": p.given,
-                "physicist": physicist,
-                "patient_id": p.id,
-                "task_display_focus": t.display_focus,
-                "task_status": t.status,
-                "task_note": t.note,
-                "met_start": met_start,
-            })
-    return rows
-
-
-def load_cq_imminent_patients_fast(session, since):
-    val_tasks = session.query(Tasks).filter(
-        Tasks.last_updated >= since,
-        Tasks.display_focus.ilike("validation médicale de la dosimétrie%"),
-        func.lower(Tasks.status).in_(["completed", "in-progress", "ready"]),
-    ).all()
-
-    if not val_tasks:
-        return []
-
-    careplan_ids = {t.careplan_id for t in val_tasks if t.careplan_id}
-    careplans = session.query(Careplans).filter(Careplans.id.in_(careplan_ids)).all()
-    patient_ids = {cp.patient_id for cp in careplans if cp.patient_id}
-    if not patient_ids:
-        return []
-    patients = session.query(Patients).filter(Patients.id.in_(patient_ids)).all()
-    patient_map = {p.id: p for p in patients}
-
-    all_related = session.query(Tasks).filter(Tasks.careplan_id.in_(careplan_ids)).all()
-    cp_tasks_map = defaultdict(list)
-    for t in all_related:
-        cp_tasks_map[t.careplan_id].append(t)
-
-    mets = session.query(Appointments).filter(
-        Appointments.patient_id.in_(patient_ids),
-        Appointments.service_type.ilike("MET%"),
-        ~func.lower(Appointments.status).in_(["cancelled"]),
-    ).all()
-    patient_mets = defaultdict(list)
-    for m in mets:
-        patient_mets[m.patient_id].append(m)
-
-    rows = []
-    for cp in careplans:
-        p = patient_map.get(cp.patient_id)
-        if not p:
-            continue
-        c_tasks = cp_tasks_map.get(cp.id, [])
-
-        v_tasks = [t for t in c_tasks
-                   if t.display_focus and t.display_focus.lower().startswith("validation médicale")
-                   and t.last_updated and t.last_updated >= since]
-        if not v_tasks:
-            continue
-        val_date = max(t.last_updated for t in v_tasks)
-
-        if not any(t.display_focus and t.display_focus.lower().startswith("finalisation")
-                   and str(t.status or "").lower() == "draft" for t in c_tasks):
-            continue
-
-        tdm_date = max([t.last_updated for t in c_tasks
-                        if t.display_focus and t.display_focus.lower().startswith("scanner") and t.last_updated],
-                       default=None)
-
-        p_mets = [m.start_scheduled_period for m in patient_mets.get(p.id, [])
-                  if m.start_scheduled_period and m.start_scheduled_period > val_date]
-        met_start = max(p_mets, default=None)
-
-        rows.append({
-            "ipp": p.ipp,
-            "last_name": p.family_name_official,
-            "first_name": p.given,
-            "tdm_date": tdm_date,
-            "Workflow": cp.title,
-            "validation_date": val_date,
-            "met_start": met_start,
-            "va_tomber": bool(met_start),
-        })
-    return rows
-
-
-# ============================================================
-# Construction des données — 100% DYNAMIQUE
-# ============================================================
-def build_dashboard_data(tab_name=None):
-    now = datetime.now()
-    limit = add_business_days(now, 2)
-    lookback = int(Setting.get_val('LOOKBACK_DAYS', '14'))
-    since = now - timedelta(days=lookback)
-
+def get_configured_extensions(tab_label=None) -> list:
+    """Retourne la liste unique des extensions définies en Admin (.dcm, .pdf...)."""
     tabs = CQTab.query.order_by(CQTab.display_order).all()
-    techniques = CQMachine.query.order_by(CQMachine.display_order).all()
-
-    lists = {tab.label: [] for tab in tabs}
-    waiting = {tab.label: [] for tab in tabs}
-
-    session = sessionmaker(bind=get_mysql_engine())()
-    try:
-        cq_ids_today = load_cq_patient_ids_today(session)
-        ready_rows = load_cq_ready_patients_fast(session, since)
-        imminent = load_cq_imminent_patients_fast(session, since)
-
-        # === DEBUG ===
-        print(f"[DEBUG] {len(ready_rows)} patients CQ ready trouvés dans ARIA")
-        print(f"[DEBUG] {len(imminent)} patients imminents trouvés dans ARIA")
-        print(f"[DEBUG] Onglets configurés :")
-        for tab in tabs:
-            print(f"   - label='{tab.label}' | keywords={tab.get_aria_keywords()}")
-        # =============
-
-        for r in imminent:
-            w = str(r.get("Workflow") or "").lower()
-            matched_tab = find_tab_for_focus(w, tabs)
-            if matched_tab:
-                waiting[matched_tab.label].append(r)
-
-        for r in ready_rows:
-            r["Timeplanner"] = r["patient_id"] in cq_ids_today
-        cq_rows = clean_cq_rows(ready_rows)
-
-        # === DEBUG ===
-        print(f"[DEBUG] {len(cq_rows)} patients après nettoyage (clean_cq_rows)")
-        # =============
-
-        unmatched = []
-        for r in cq_rows:
-            focus = str(r.get("task_display_focus") or "").lower()
-            matched_tab = find_tab_for_focus(focus, tabs)
-            if matched_tab:
-                lists[matched_tab.label].append(r)
-            else:
-                unmatched.append(focus)
-
-        # === DEBUG ===
-        if unmatched:
-            print(f"[DEBUG] ⚠️ {len(unmatched)} patients NON RATTACHÉS à un onglet :")
-            for u in unmatched[:10]:
-                print(f"   - '{u}'")
-        else:
-            print(f"[DEBUG] ✅ Tous les patients rattachés à un onglet")
-        # =============
-
-        for label in lists:
-            lists[label] = sort_by_met_start(lists[label])
-
-    except Exception as e:
-        print(f"Error executing ARIA MySQL query: {e}")
-    finally:
-        session.close()
-
-    counts = {label: len(rows) for label, rows in lists.items()}
-    print(f"[CQ] {datetime.now():%H:%M:%S} Counts={counts} | onglet demandé='{tab_name}'")
-
-    active_tab = None
-    if tab_name:
-        for tab in tabs:
-            if tab.label.lower() == tab_name.lower():
-                active_tab = tab
-                break
-    if not active_tab and tabs:
-        active_tab = tabs[0]
-
-    if not active_tab:
-        return {'main_rows': [], 'prep_rows': [], 'counts': counts}
-
-    main_rows = []
-    for r in lists[active_tab.label]:
-        met = r["met_start"]
-        ipp = str(r.get("ipp") or r.get("patient_id") or "")
-        focus = str(r.get("task_display_focus") or "")
-        focus_lower = focus.lower()
-
-        acq_time, mount_time, tech_name = find_technique_rules(focus_lower, techniques)
-        energy = active_tab.get_default_energy()
-
-        # --- Recherche dans le cache du Scan Réseau ---
-        scan_dcm = ScanCache.query.filter_by(patient_id=ipp, file_type='DICOM').first()
-        scan_pdf = ScanCache.query.filter_by(patient_id=ipp, file_type='PDF').first()
-
-        # Récupération du nom du dossier où on a trouvé les fichiers
-        folder_name = "-"
-        if scan_dcm and scan_dcm.file_path:
-            folder_name = os.path.basename(os.path.dirname(scan_dcm.file_path))
-        elif scan_pdf and scan_pdf.file_path:
-            folder_name = os.path.basename(os.path.dirname(scan_pdf.file_path))
-
-        # TODO (prochaine étape) : extraire ça du fichier DICOM
-        localisation = "À venir..."
-
-        main_rows.append({
-            'patient_id': ipp,
-            'last_name': str(r.get("last_name") or "").upper(),
-            'first_name': str(r.get("first_name") or ""),
-            
-            # --- Nouvelles colonnes ---
-            'localisation': localisation,
-            'dcm': '✅' if scan_dcm else '❌',
-            'pdf': '✅' if scan_pdf else '❌',
-            'folder': folder_name,
-            
-            'met_date': met.strftime('%Y-%m-%d %H:%M') if met else '',
-            'met_color': row_color(met, now, limit),
-            'energy': energy,
-            'technique': focus,
-            'status': str(r.get("task_status") or ""),
-            
-            # Variables cachées utilisées par le Javascript
-            'base_duration': acq_time,
-            'mount_duration': mount_time,
-            'tech_name': tech_name,
-            
-            'timeplanner': '✅' if r.get("Timeplanner") else '❌',
-            'comment': str(r.get("task_note") or "")
-        })
-
-    prep_rows = []
-    for p in waiting[active_tab.label]:
-        val = p.get("validation_date")
-        met = p.get("met_start")
-        prep_rows.append({
-            'patient_id': str(p.get("ipp") or ""),
-            'patient_name': f"{p.get('last_name') or ''} {p.get('first_name') or ''}",
-            'task_name': str(p.get("Workflow") or ""),
-            'due_date': p["tdm_date"].strftime('%d/%m') if p.get("tdm_date") else '-',
-            'status': f"Valid. méd. : {val.strftime('%d/%m') if val else '-'} | MET : {met.strftime('%d/%m') if met else '-'}",
-        })
-
-        # === DEBUG PRÉPARATION ===
-        unmatched_prep = []
-        for r in imminent:
-            w = str(r.get("Workflow") or "").lower()
-            if not find_tab_for_focus(w, tabs):
-                unmatched_prep.append(w)
-        if unmatched_prep:
-            print(f"[DEBUG PREP] ⚠️ {len(unmatched_prep)} patients préparation NON RATTACHÉS :")
-            for u in set(unmatched_prep):
-                print(f"   - '{u}'")
-        # =========================
-    return {'main_rows': main_rows, 'prep_rows': prep_rows, 'counts': counts}
-
-
-# ============================================================
-# Scan réseau NAS — 100% DYNAMIQUE
-# ============================================================
-def perform_network_scan():
-    """Scanne les dossiers réseau de chaque onglet avec ses extensions configurées."""
-    tabs = CQTab.query.all()
-    scan_depth = int(Setting.get_val('SCAN_DEPTH', '3'))
-    scandidos_sig = Setting.get_val('SCANDIDOS_SIGNATURE', '114358')
-
-    found_count = 0
+    ordered = []
+    seen = set()
 
     for tab in tabs:
-        extensions = [e.strip().lower() for e in tab.get_file_extensions()]
-        paths = tab.get_network_paths()
-
-        for path in paths:
-            if not path or not os.path.exists(path):
+        if tab_label and tab.label != tab_label:
+            continue
+        exts = tab.get_file_extensions()
+        if isinstance(exts, str):
+            exts = [e.strip() for e in exts.split(",") if e.strip()]
+        for ext in exts:
+            e = str(ext).strip().lower()
+            if not e:
                 continue
+            if not e.startswith("."):
+                e = "." + e
+            if e not in seen:
+                seen.add(e)
+                ordered.append(e)
+
+    return ordered if ordered else [".dcm", ".pdf"]
+
+
+def _icon_ok():
+    return '<i class="fa-solid fa-circle-check text-emerald-500"></i>'
+
+
+def _icon_no():
+    return '<span class="text-slate-400">-</span>'
+
+
+def _met_color_class(met_dt):
+    if not met_dt or isinstance(met_dt, str):
+        return ""
+    try:
+        now = datetime.now()
+        if met_dt.tzinfo:
+            now = datetime.now(met_dt.tzinfo)
+        delta_h = (met_dt - now).total_seconds() / 3600.0
+        if delta_h < 0:
+            return "bg-slate-100 dark:bg-slate-900/40"
+        if delta_h <= 24:
+            return "bg-amber-50 dark:bg-amber-950/30"
+        if delta_h <= 72:
+            return "bg-cyan-50 dark:bg-cyan-950/20"
+    except Exception:
+        pass
+    return ""
+
+
+def _fmt_dt(value):
+    if not value:
+        return "—"
+    if isinstance(value, datetime):
+        return value.strftime("%d/%m/%Y %H:%M")
+    return str(value)
+
+
+def _scans_for_patient(ipp: str) -> list:
+    return ScanCache.query.filter_by(patient_id=str(ipp)).all()
+
+
+def _ext_status_for_scans(scans, configured_extensions: list) -> dict:
+    found = {(s.file_type or "").lower() for s in scans}
+    status = {}
+    for ext in configured_extensions:
+        status[ext] = _icon_ok() if ext in found else _icon_no()
+    return status
+
+
+def _folder_from_scans(scans, fallback: str = "") -> str:
+    for s in scans:
+        raw = s.extra_data_json
+        if raw:
             try:
-                for root, dirs, files in os.walk(path):
-                    depth = root[len(path):].count(os.sep)
-                    if depth >= scan_depth:
-                        dirs.clear()
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(data, dict) and data.get("folder"):
+                    return data["folder"]
+            except Exception:
+                pass
+    return fallback or ""
 
-                    for f in files:
-                        file_path = os.path.join(root, f)
-                        ext = os.path.splitext(f)[1].lower()
 
-                        # Vérifier si l'extension est dans la liste de l'onglet
-                        if ext not in extensions:
-                            continue
+# ===========================================================================
+# Scan Réseau IUCT (100% Admin Driven)
+# ===========================================================================
 
-                        lower_f = f.lower()
+def perform_network_scan() -> int:
+    print("=== DEBUT perform_network_scan ===")
 
-                        # --- PDF ---
-                        if ext == '.pdf':
-                            patient_id = f.split('_')[0] if '_' in f else os.path.splitext(f)[0]
-                            patient_id = patient_id.strip()
-                            if patient_id and not ScanCache.query.filter_by(
-                                    patient_id=patient_id, file_type='PDF').first():
-                                db_local.session.add(ScanCache(
-                                    patient_id=patient_id,
-                                    file_type='PDF',
-                                    file_name=f,
-                                    file_path=file_path,
-                                    last_modified=datetime.fromtimestamp(os.path.getmtime(file_path))
-                                ))
-                                found_count += 1
+    try:
+        ScanCache.query.delete()
+        db_local.session.commit()
+    except Exception as e:
+        db_local.session.rollback()
 
-                        # --- DICOM / autres extensions ---
-                        elif ext == '.dcm':
-                            parent_name = os.path.basename(root)
-                            patient_id = parent_name if parent_name and any(
-                                c.isdigit() for c in parent_name) else f.split('_')[0]
-                            if patient_id:
-                                patient_id = str(patient_id).strip()
-                                if not ScanCache.query.filter_by(
-                                        patient_id=patient_id, file_type='DICOM').first():
-                                    db_local.session.add(ScanCache(
-                                        patient_id=patient_id,
-                                        file_type='DICOM',
-                                        file_name=f,
-                                        file_path=file_path,
-                                        last_modified=datetime.fromtimestamp(os.path.getmtime(file_path))
-                                    ))
-                                    found_count += 1
+    settings = get_global_settings()
+    try:
+        scan_depth = int(settings.get("SCAN_DEPTH", 3) or 3)
+    except ValueError:
+        scan_depth = 3
+    try:
+        year_overlap_days = int(settings.get("YEAR_OVERLAP_DAYS", 15) or 15)
+    except ValueError:
+        year_overlap_days = 15
 
-                        # --- XML (Scandidos) ---
-                        elif ext == '.xml':
-                            try:
-                                tree = ET.parse(file_path)
-                                root_xml = tree.getroot()
-                                xml_str = ET.tostring(root_xml, encoding='utf-8').decode('utf-8', errors='ignore')
-                                if scandidos_sig.lower() in xml_str.lower():
-                                    elem = root_xml.find('.//PatientID')
-                                    if elem is not None and elem.text:
-                                        patient_id = elem.text.strip()
-                                        if not ScanCache.query.filter_by(
-                                                patient_id=patient_id, file_type='DICOM').first():
-                                            db_local.session.add(ScanCache(
-                                                patient_id=patient_id,
-                                                file_type='DICOM',
-                                                file_name=f,
-                                                file_path=file_path,
-                                                last_modified=datetime.fromtimestamp(os.path.getmtime(file_path))
-                                            ))
-                                            found_count += 1
-                            except Exception:
+    current_year = date.today().year
+    today = date.today()
+    allowed_years = {current_year}
+    
+    try:
+        if today <= date(current_year, 1, min(year_overlap_days, 28)):
+            allowed_years.add(current_year - 1)
+    except ValueError:
+        pass
+    try:
+        last_day = date(current_year, 12, 31)
+        if (last_day - today).days < year_overlap_days:
+            allowed_years.add(current_year + 1)
+    except ValueError:
+        pass
+
+    tabs = CQTab.query.order_by(CQTab.display_order).all()
+    scanned_count = 0
+    seen_keys = set()
+
+    for tab in tabs:
+        cfg = tab._get_config() if hasattr(tab, '_get_config') else {}
+        network_paths = tab.get_network_paths() if hasattr(tab, 'get_network_paths') else cfg.get("network_paths", [])
+        if isinstance(network_paths, str):
+            network_paths = [p.strip() for p in network_paths.replace("\r", "").split("\n") if p.strip()]
+
+        file_exts = tab.get_file_extensions() if hasattr(tab, 'get_file_extensions') else cfg.get("file_extensions", [".dcm", ".pdf"])
+        if isinstance(file_exts, str):
+            file_exts = [e.strip() for e in file_exts.split(",") if e.strip()]
+        
+        valid_exts = tuple(
+            e.lower() if e.startswith(".") else f".{e.lower()}"
+            for e in file_exts if e
+        )
+        if not valid_exts:
+            valid_exts = (".dcm", ".pdf")
+
+        grouped_by_year = cfg.get("grouped_by_year", False)
+
+        for base_path in network_paths:
+            if not os.path.isdir(base_path):
+                print(f"[SCAN] Chemin inaccessible: {base_path}")
+                continue
+
+            folder_basename = os.path.basename(os.path.normpath(base_path))
+
+            root_paths_to_scan = []
+            if grouped_by_year:
+                for y in sorted(allowed_years):
+                    ypath = os.path.join(base_path, str(y))
+                    if os.path.isdir(ypath):
+                        root_paths_to_scan.append(ypath)
+                if not root_paths_to_scan:
+                    root_paths_to_scan.append(base_path)
+            else:
+                root_paths_to_scan.append(base_path)
+
+            for root_path in root_paths_to_scan:
+                print(f"[SCAN] Ingestion de {root_path} (Depth={scan_depth})")
+                for dirpath, dirnames, filenames in os.walk(root_path):
+                    rel = os.path.relpath(dirpath, root_path)
+                    depth = 0 if rel == "." else len(rel.split(os.sep))
+                    if depth > scan_depth:
+                        dirnames[:] = []
+                        continue
+
+                    dir_name = os.path.basename(dirpath)
+                    ipp_candidates = extract_ipp_candidates(dir_name)
+                    if not ipp_candidates:
+                        continue
+
+                    for ipp in ipp_candidates:
+                        for fname in filenames:
+                            f_ext = os.path.splitext(fname)[1].lower()
+                            if f_ext not in valid_exts:
                                 continue
-
-                        # --- JSON (Scandidos) ---
-                        elif ext == '.json':
-                            try:
-                                with open(file_path, 'r', encoding='utf-8', errors='ignore') as jf:
-                                    data = json.load(jf)
-                                    if scandidos_sig.lower() in json.dumps(data).lower():
-                                        patient_id = data.get('PatientID') or data.get('patient_id')
-                                        if patient_id:
-                                            patient_id = str(patient_id).strip()
-                                            if not ScanCache.query.filter_by(
-                                                    patient_id=patient_id, file_type='DICOM').first():
-                                                db_local.session.add(ScanCache(
-                                                    patient_id=patient_id,
-                                                    file_type='DICOM',
-                                                    file_name=f,
-                                                    file_path=file_path,
-                                                    last_modified=datetime.fromtimestamp(os.path.getmtime(file_path))
-                                                ))
-                                                found_count += 1
-                            except Exception:
+                            full_file_path = os.path.join(dirpath, fname)
+                            key = (str(ipp), full_file_path)
+                            if key in seen_keys:
                                 continue
+                            seen_keys.add(key)
 
-            except Exception as e:
-                print(f"[SCAN] Erreur scan {path}: {e}")
+                            extra_data = json.dumps({
+                                "folder": folder_basename,
+                                "base_path": base_path,
+                                "tab_id": tab.id
+                            })
 
-    db_local.session.commit()
-    return found_count
+                            sc = ScanCache(
+                                patient_id=str(ipp),
+                                file_type=f_ext,
+                                file_name=fname,
+                                file_path=full_file_path,
+                                extra_data_json=extra_data
+                            )
+                            db_local.session.add(sc)
+                            scanned_count += 1
+
+    try:
+        db_local.session.commit()
+        print(f"=== FIN SCAN : {scanned_count} fichiers indexés ===")
+    except Exception as e:
+        db_local.session.rollback()
+        return 0
+
+    return scanned_count
+
+
+# ===========================================================================
+# Détection exacte des Tâches CQ Réalisation vs Préparation
+# ===========================================================================
+
+def _is_cq_ready_task(display_focus: str, status: str) -> bool:
+    """
+    Vérifie qu'il s'agit bien d'une tâche de Réalisation de CQ ou Replanification.
+    """
+    norm_f = normalize(display_focus)
+    norm_s = normalize(status)
+
+    if norm_s not in ('ready', 'inprogress', 'in-progress', 'booked', 'arrived'):
+        return False
+
+    # Doit contenir "realisation" + "cq" OU "replanif" + "cq" OU ("cq" + machine/patient)
+    if ("realisation" in norm_f and "cq" in norm_f) or ("replanif" in norm_f and "cq" in norm_f):
+        return True
+
+    if "cq" in norm_f and any(k in norm_f for k in ("patient", "ruby", "octa", "tomo", "hyperarc", "machine")):
+        return True
+
+    return False
+
+
+def _is_prep_task(display_focus: str, status: str) -> bool:
+    """
+    Vérifie s'il s'agit d'une tâche de Préparation CQ (stec, stic, ra, dosim, validation liés au CQ).
+    Empêche les faux positifs massifs de la clinique générale.
+    """
+    norm_f = normalize(display_focus)
+    norm_s = normalize(status)
+
+    if norm_s in ('cancelled', 'fulfilled', 'completed'):
+        return False
+
+    if "realisation" in norm_f and "cq" in norm_f:
+        return False
+
+    # La tâche de préparation doit explicitement faire référence au CQ, contrôle ou qualité
+    has_cq_context = any(k in norm_f for k in ("cq", "controle", "qualite", "dosim", "stec", "stic", "ra"))
+    if not has_cq_context:
+        return False
+
+    prep_keywords = ("wfstec", "wfstic", "wfra", "stec", "stic", "preparat", "validation", "dosim")
+    return any(match_tab_keyword(k, display_focus) for k in prep_keywords)
+
+
+def _fetch_aria_activity_rows(lookback_days: int) -> list:
+    """
+    Requête MySQL optimisée sans produit cartésien (sous-requêtes scalars pour MET et Prescription).
+    """
+    query = """
+        SELECT 
+            t.id                                            AS task_id,
+            COALESCE(p.ipp, CAST(p.id AS CHAR))              AS patient_id,
+            COALESCE(p.family_name_official, '')            AS last_name,
+            COALESCE(p.given, '')                          AS first_name,
+            COALESCE(t.display_focus, '')                   AS display_focus,
+            COALESCE(t.status, 'ready')                     AS status,
+            COALESCE(t.note, '')                            AS comment,
+            (
+                SELECT a.start_scheduled_period 
+                FROM appointments a 
+                WHERE a.patient_id = p.id 
+                  AND LOWER(COALESCE(a.service_type, '')) LIKE 'met%%' 
+                  AND LOWER(COALESCE(a.status, '')) NOT IN ('cancelled')
+                ORDER BY a.start_scheduled_period DESC 
+                LIMIT 1
+            ) AS scheduled_start,
+            (
+                SELECT a.id 
+                FROM appointments a 
+                WHERE a.patient_id = p.id 
+                  AND LOWER(COALESCE(a.service_type, '')) LIKE 'met%%' 
+                  AND LOWER(COALESCE(a.status, '')) NOT IN ('cancelled')
+                ORDER BY a.start_scheduled_period DESC 
+                LIMIT 1
+            ) AS appointment_id,
+            (
+                SELECT COALESCE(pr.site, pr.bodysite, '') 
+                FROM prescriptions pr 
+                WHERE pr.patient_id = p.id 
+                ORDER BY pr.id DESC 
+                LIMIT 1
+            ) AS localisation
+        FROM tasks t
+        JOIN careplans cp ON t.careplan_id = cp.id
+        JOIN patients p ON cp.patient_id = p.id
+        WHERE (t.last_updated >= NOW() - INTERVAL %s DAY OR t.created_at >= NOW() - INTERVAL %s DAY)
+          AND LOWER(COALESCE(t.status, '')) IN ('ready', 'in-progress', 'inprogress', 'booked', 'arrived')
+        ORDER BY t.last_updated DESC
+    """
+
+    cfg = get_aria_mysql_config()
+
+    try:
+        conn, cursor = get_mysql_connection(cfg)
+        try:
+            cursor.execute(query, (lookback_days, lookback_days))
+            rows = cursor.fetchall() or []
+            print(f"[ARIA MySQL] Succès : {len(rows)} tâches brutes analysées (sans doublons).")
+            return rows
+        finally:
+            try: cursor.close()
+            except Exception: pass
+            try: conn.close()
+            except Exception: pass
+    except Exception as e:
+        print(f"[ARIA MySQL] Erreur : {e}")
+
+    return []
+
+
+def build_dashboard_data(tab_name=None) -> dict:
+    """
+    Point d'entrée principal /api/data.
+    Ventile les patients dans les onglets avec vérification exacte des mots-clés.
+    """
+    settings = get_global_settings()
+    try:
+        lookback_days = int(settings.get("LOOKBACK_DAYS", 14) or 14)
+    except ValueError:
+        lookback_days = 14
+
+    tabs = CQTab.query.order_by(CQTab.display_order).all()
+    machines = CQMachine.query.order_by(CQMachine.display_order).all()
+
+    configured_extensions = get_configured_extensions(tab_name if tab_name else None)
+    raw_rows = _fetch_aria_activity_rows(lookback_days)
+
+    counts = {t.label: 0 for t in tabs}
+    main_by_key = {}  # CORRECTION ANTI-ÉCRASEMENT : Clé unique par IPP + Task ID
+    prep_rows = []
+    prep_seen = set()
+
+    for row in raw_rows:
+        ipp = str(row.get("patient_id") or "").strip()
+        if not ipp:
+            continue
+
+        task_id = str(row.get("task_id") or "0")
+        last_name = row.get("last_name") or ""
+        first_name = row.get("first_name") or ""
+        display_focus = row.get("display_focus") or ""
+        status = str(row.get("status") or "ready")
+        localisation = row.get("localisation") or "Non spécifié"
+        comment = row.get("comment") or ""
+        scheduled = row.get("scheduled_start")
+        has_appointment = bool(row.get("appointment_id"))
+
+        # 1. Traitement des Préparations
+        if _is_prep_task(display_focus, status):
+            matched_tab = find_tab_for_focus(display_focus, tabs)
+            key = (ipp, display_focus)
+            if key not in prep_seen:
+                prep_seen.add(key)
+                if (not tab_name) or (matched_tab and matched_tab.label == tab_name):
+                    prep_rows.append({
+                        "patient_id": ipp,
+                        "patient_name": f"{last_name} {first_name}".strip(),
+                        "task_name": display_focus,
+                        "due_date": _fmt_dt(scheduled),
+                        "status": status,
+                    })
+            continue
+
+        # 2. Filtrage CQ : ignorer si ce n'est PAS une réalisation de CQ
+        if not _is_cq_ready_task(display_focus, status):
+            continue
+
+        matched_tab = find_tab_for_focus(display_focus, tabs)
+        if matched_tab is None:
+            continue
+
+        counts[matched_tab.label] = counts.get(matched_tab.label, 0) + 1
+
+        if tab_name and matched_tab.label != tab_name:
+            continue
+
+        rules = find_technique_rules(display_focus, machines)
+        default_energy = matched_tab.get_default_energy() if hasattr(matched_tab, 'get_default_energy') else ""
+
+        scans = _scans_for_patient(ipp)
+        tab_exts = get_configured_extensions(matched_tab.label)
+        exts_for_row = configured_extensions or tab_exts
+        ext_status = _ext_status_for_scans(scans, exts_for_row)
+
+        folder_name = _folder_from_scans(scans, fallback=matched_tab.label)
+
+        timeplanner_icon = (
+            '<i class="fa-solid fa-calendar-check text-emerald-500 text-base" title="Rendez-vous planifié"></i>'
+            if has_appointment or scheduled
+            else '<span class="text-slate-400" title="Aucun créneau planifié">—</span>'
+        )
+
+        met_date = _fmt_dt(scheduled) if scheduled else "—"
+        met_color = _met_color_class(scheduled) if isinstance(scheduled, datetime) else ""
+
+        row_unique_key = f"{ipp}_{task_id}"
+        main_by_key[row_unique_key] = {
+            "patient_id": ipp,
+            "last_name": last_name,
+            "first_name": first_name,
+            "localisation": localisation if localisation else "Non spécifié",
+            "ext_status": ext_status,
+            "dcm": ext_status.get(".dcm", _icon_no()),
+            "pdf": ext_status.get(".pdf", _icon_no()),
+            "folder": folder_name or "—",
+            "met_date": met_date,
+            "met_color": met_color,
+            "energy": default_energy or "—",
+            "technique": rules["technique_name"],
+            "tech_name": rules["technique_name"],
+            "base_duration": rules["acquisition"],
+            "mount_duration": rules["mount_unmount"],
+            "timeplanner": timeplanner_icon,
+            "status": status,
+            "comment": comment or "",
+            "tab_label": matched_tab.label,
+        }
+
+    return {
+        "main_rows": list(main_by_key.values()),
+        "prep_rows": prep_rows,
+        "counts": counts,
+        "configured_extensions": configured_extensions,
+    }

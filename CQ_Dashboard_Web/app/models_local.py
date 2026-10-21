@@ -44,14 +44,15 @@ class CQTab(db_local.Model):
         try:
             raw = json.loads(self.config_json or '{}')
             if isinstance(raw, list):
-                return {"network_paths": [], "file_extensions": ['.dcm', '.pdf'], "default_energy": ""}
+                return {"network_paths": [], "file_extensions": ['.dcm', '.pdf'], "default_energy": "", "grouped_by_year": False}
             return {
                 "network_paths": raw.get("network_paths", []),
                 "file_extensions": raw.get("file_extensions", ['.dcm', '.pdf']),
-                "default_energy": raw.get("default_energy", "")
+                "default_energy": raw.get("default_energy", ""),
+                "grouped_by_year": raw.get("grouped_by_year", False)
             }
         except Exception:
-            return {"network_paths": [], "file_extensions": ['.dcm', '.pdf'], "default_energy": ""}
+            return {"network_paths": [], "file_extensions": ['.dcm', '.pdf'], "default_energy": "", "grouped_by_year": False}
 
     def get_aria_keywords(self):
         """Retourne la liste des mots-clés ARIA (CSV dans le champ name)."""
@@ -66,11 +67,12 @@ class CQTab(db_local.Model):
     def get_default_energy(self):
         return self._get_config().get("default_energy", "")
 
-    def set_config(self, network_paths=None, file_extensions=None, default_energy=""):
+    def set_config(self, network_paths=None, file_extensions=None, default_energy="", grouped_by_year=False):
         self.config_json = json.dumps({
             "network_paths": network_paths or [],
             "file_extensions": file_extensions or ['.dcm', '.pdf'],
-            "default_energy": default_energy or ""
+            "default_energy": default_energy or "",
+            "grouped_by_year": grouped_by_year
         })
 
     def to_dict(self):
@@ -83,6 +85,7 @@ class CQTab(db_local.Model):
             'network_paths': c["network_paths"],
             'file_extensions': c["file_extensions"],
             'default_energy': c["default_energy"],
+            'grouped_by_year': c["grouped_by_year"],
         }
 
 
@@ -144,9 +147,13 @@ def seed_defaults():
         'MYSQL_PASSWORD': ('', 'MySQL Password'),
         'MYSQL_DB': ('db_iuct', 'MySQL Database Name'),
         'ADMIN_PASSWORD': ('admin', 'Admin Login Password'),
-        'LOOKBACK_DAYS': ('14', 'Nombre de jours à remonter dans ARIA'),
+        'LOOKBACK_DAYS': ('14', 'Historique ARIA : nb de jours à remonter pour les CQ'),
         'SCAN_DEPTH': ('3', 'Profondeur max du scan réseau (sous-dossiers)'),
         'SCANDIDOS_SIGNATURE': ('114358', 'Signature des fichiers Scandidos'),
+        'YEAR_OVERLAP_DAYS': (
+            '15',
+            'Scan réseau IUCT : nb de jours de chevauchement en début/fin d\'année (ex: 15 → on scanne aussi N-1 en janvier et N+1 en décembre)'
+        ),
     }
     for key, (val, desc) in default_settings.items():
         if not Setting.query.filter_by(key=key).first():

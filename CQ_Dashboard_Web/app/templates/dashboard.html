@@ -18,10 +18,8 @@
             {% endfor %}
         </div>
 
-        <!-- Controls (Recherche, Heure, Boutons) -->
+        <!-- Controls -->
         <div class="flex items-center space-x-3 w-full sm:w-auto">
-
-            <!-- Heure actualisation -->
             <div class="text-right text-xs text-slate-500 dark:text-slate-400 leading-tight mr-2">
                 Actualisé à : <br>
                 <span id="last-update-time" class="font-bold text-slate-800 dark:text-slate-200 text-sm">--:--</span>
@@ -43,28 +41,13 @@
         </div>
     </div>
 
-    <!-- Main Table Container -->
+    <!-- Main Table -->
     <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md border border-slate-200 dark:border-slate-700 overflow-hidden">
         <div class="overflow-x-auto">
             <table class="w-full text-xs text-left border-collapse">
                 <thead class="bg-slate-900 text-slate-300 uppercase tracking-wider text-[11px]">
-                    <tr>
-                        <th class="p-2 border-b border-slate-700 w-10 text-center">
-                            <input type="checkbox" id="check-all" checked class="rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer">
-                        </th>
-                        <th class="p-2 border-b border-slate-700">IPP</th>
-                        <th class="p-2 border-b border-slate-700">Nom</th>
-                        <th class="p-2 border-b border-slate-700">Prenom</th>
-                        <th class="p-2 border-b border-slate-700">Localisation</th>
-                        <th class="p-2 border-b border-slate-700 text-center" title="Fichier DICOM">DICOM</th>
-                        <th class="p-2 border-b border-slate-700 text-center" title="Rapport PDF">PDF</th>
-                        <th class="p-2 border-b border-slate-700">Dossier</th>
-                        <th class="p-2 border-b border-slate-700">MET</th>
-                        <th class="p-2 border-b border-slate-700">Energie</th>
-                        <th class="p-2 border-b border-slate-700">Technique</th>
-                        <th class="p-2 border-b border-slate-700 text-center">Timeplanner</th>
-                        <th class="p-2 border-b border-slate-700">Statut</th>
-                        <th class="p-2 border-b border-slate-700">Commentaire</th>
+                    <tr id="dashboard-table-head">
+                        <!-- Construit dynamiquement par JS selon extensions Admin -->
                     </tr>
                 </thead>
                 <tbody id="dashboard-table-body" class="divide-y divide-slate-200 dark:divide-slate-700 font-medium">
@@ -73,7 +56,6 @@
             </table>
         </div>
 
-        <!-- Barre de calcul du temps -->
         <div class="p-4 bg-slate-50 dark:bg-slate-900/80 border-t border-slate-200 dark:border-slate-700 flex justify-end items-center">
             <div class="text-sm font-bold text-slate-700 dark:text-slate-300 flex items-center">
                 <i class="fa-solid fa-stopwatch text-cyan-500 text-lg mr-2"></i>
@@ -120,61 +102,135 @@
 {% block scripts %}
 <script>
     let activeTab = "{{ default_tab }}";
+    // Extensions initiales depuis le serveur (rafraîchies à chaque /api/data)
+    let configuredExtensions = {{ configured_extensions|default([])|tojson }};
+
+    const FIXED_COLS_BEFORE = 5; // checkbox + IPP + Nom + Prenom + Localisation
+    // puis N colonnes d'extensions
+    // puis Dossier, MET, Energie, Technique, Timeplanner, Statut, Commentaire = 7
+
+    function buildThead(exts) {
+        const theadRow = document.getElementById('dashboard-table-head');
+        const extHeaders = (exts || []).map(ext =>
+            `<th class="p-2 border-b border-slate-700 text-center" title="Fichier ${ext}">${String(ext).toUpperCase()}</th>`
+        ).join('');
+
+        theadRow.innerHTML = `
+            <th class="p-2 border-b border-slate-700 w-10 text-center">
+                <input type="checkbox" id="check-all" checked class="rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer">
+            </th>
+            <th class="p-2 border-b border-slate-700">IPP</th>
+            <th class="p-2 border-b border-slate-700">Nom</th>
+            <th class="p-2 border-b border-slate-700">Prenom</th>
+            <th class="p-2 border-b border-slate-700">Localisation</th>
+            ${extHeaders}
+            <th class="p-2 border-b border-slate-700">Dossier</th>
+            <th class="p-2 border-b border-slate-700">MET</th>
+            <th class="p-2 border-b border-slate-700">Energie</th>
+            <th class="p-2 border-b border-slate-700">Technique</th>
+            <th class="p-2 border-b border-slate-700 text-center">Timeplanner</th>
+            <th class="p-2 border-b border-slate-700">Statut</th>
+            <th class="p-2 border-b border-slate-700">Commentaire</th>
+        `;
+
+        // Re-bind check-all (recréé à chaque build)
+        const checkAll = document.getElementById('check-all');
+        if (checkAll) {
+            checkAll.addEventListener('change', function () {
+                const isChecked = this.checked;
+                document.querySelectorAll('.row-checkbox').forEach(cb => cb.checked = isChecked);
+                calculateTime();
+            });
+        }
+    }
+
+    function colCount() {
+        return FIXED_COLS_BEFORE + (configuredExtensions || []).length + 7;
+    }
 
     function loadData() {
-        // Met à jour l'heure avant l'appel
         const now = new Date();
-        document.getElementById('last-update-time').innerText = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        document.getElementById('last-update-time').innerText = now.toLocaleTimeString('fr-FR', {
+            hour: '2-digit', minute: '2-digit', second: '2-digit'
+        });
 
         fetch(`/api/data?tab=${encodeURIComponent(activeTab)}&_t=${Date.now()}`)
             .then(res => res.json())
             .then(data => {
-                renderTable(data.main_rows);
-                renderPrepTable(data.prep_rows);
+                if (Array.isArray(data.configured_extensions) && data.configured_extensions.length) {
+                    configuredExtensions = data.configured_extensions;
+                }
+                buildThead(configuredExtensions);
+                renderTable(data.main_rows || []);
+                renderPrepTable(data.prep_rows || []);
 
-                // Maj des badges de compteurs sur les onglets
                 document.querySelectorAll('.tab-btn').forEach(b => {
                     const c = (data.counts || {})[b.dataset.tab];
-                    b.querySelector('.tab-count').innerText = c !== undefined ? `(${c})` : '';
+                    const span = b.querySelector('.tab-count');
+                    if (span) span.innerText = c !== undefined ? `(${c})` : '';
                 });
+            })
+            .catch(err => {
+                console.error('Erreur /api/data', err);
             });
     }
 
     function renderTable(rows) {
         const tbody = document.getElementById('dashboard-table-body');
         tbody.innerHTML = '';
-        document.getElementById('check-all').checked = true;
+
+        const checkAll = document.getElementById('check-all');
+        if (checkAll) checkAll.checked = true;
 
         if (!rows || rows.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="14" class="p-4 text-center text-slate-500">Aucun rendez-vous trouvé.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="${colCount()}" class="p-4 text-center text-slate-500">Aucun rendez-vous trouvé.</td></tr>`;
             calculateTime();
             return;
         }
 
+        const exts = configuredExtensions || [];
+
         rows.forEach(r => {
+            // Cellules dynamiques par extension
+            const extStatus = r.ext_status || {};
+            let extCells = '';
+            exts.forEach(ext => {
+                let cell = extStatus[ext];
+                // Compat ancienne API dcm/pdf si ext_status absent
+                if (cell === undefined || cell === null) {
+                    if (ext === '.dcm' && r.dcm !== undefined) cell = r.dcm;
+                    else if (ext === '.pdf' && r.pdf !== undefined) cell = r.pdf;
+                    else cell = '<span class="text-slate-400">-</span>';
+                }
+                // Si le backend envoie un booléen
+                if (cell === true) cell = '<i class="fa-solid fa-circle-check text-emerald-500"></i>';
+                if (cell === false) cell = '<span class="text-slate-400">-</span>';
+
+                extCells += `<td class="p-2 text-center text-base">${cell}</td>`;
+            });
+
             const tr = document.createElement('tr');
-            tr.className = `${r.met_color} hover:brightness-95 transition-all`;
+            tr.className = `${r.met_color || ''} hover:brightness-95 transition-all`;
             tr.innerHTML = `
                 <td class="p-2 text-center">
                     <input type="checkbox" class="row-checkbox rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer"
                            checked
-                           data-acq="${r.base_duration}"
-                           data-mount="${r.mount_duration}"
-                           data-tech="${r.tech_name}">
+                           data-acq="${r.base_duration ?? r.acq_minutes ?? 0}"
+                           data-mount="${r.mount_duration ?? r.mount_minutes ?? 0}"
+                           data-tech="${r.tech_name || r.technique || ''}">
                 </td>
-                <td class="p-2 font-mono text-slate-900 dark:text-white font-bold">${r.patient_id}</td>
-                <td class="p-2 uppercase font-semibold">${r.last_name}</td>
-                <td class="p-2 capitalize">${r.first_name}</td>
-                <td class="p-2 font-semibold text-indigo-700 dark:text-indigo-400">${r.localisation}</td>
-                <td class="p-2 text-center text-base">${r.dcm}</td>
-                <td class="p-2 text-center text-base">${r.pdf}</td>
-                <td class="p-2 text-[10px] text-slate-500 font-mono tracking-tighter truncate max-w-[120px]" title="${r.folder}">${r.folder}</td>
-                <td class="p-2 font-mono">${r.met_date}</td>
-                <td class="p-2 font-semibold text-amber-600 dark:text-amber-400">${r.energy}</td>
-                <td class="p-2 text-slate-600 dark:text-slate-400 text-[11px]" title="Acquisition: ${r.base_duration}m | Montage: ${r.mount_duration}m">${r.technique}</td>
-                <td class="p-2 text-center text-base">${r.timeplanner}</td>
-                <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-slate-700">${r.status}</span></td>
-                <td class="p-2 text-slate-500 italic text-[11px]">${r.comment}</td>
+                <td class="p-2 font-mono text-slate-900 dark:text-white font-bold">${r.patient_id || r.ipp || ''}</td>
+                <td class="p-2 uppercase font-semibold">${r.last_name || r.nom || ''}</td>
+                <td class="p-2 capitalize">${r.first_name || r.prenom || ''}</td>
+                <td class="p-2 font-semibold text-indigo-700 dark:text-indigo-400">${r.localisation || ''}</td>
+                ${extCells}
+                <td class="p-2 text-[10px] text-slate-500 font-mono tracking-tighter truncate max-w-[120px]" title="${r.folder || ''}">${r.folder || ''}</td>
+                <td class="p-2 font-mono">${r.met_date || r.met || ''}</td>
+                <td class="p-2 font-semibold text-amber-600 dark:text-amber-400">${r.energy || r.energie || ''}</td>
+                <td class="p-2 text-slate-600 dark:text-slate-400 text-[11px]" title="Acquisition: ${r.base_duration ?? ''}m | Montage: ${r.mount_duration ?? ''}m">${r.technique || r.tech_name || ''}</td>
+                <td class="p-2 text-center text-base">${r.timeplanner || ''}</td>
+                <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-slate-700">${r.status || r.statut || ''}</span></td>
+                <td class="p-2 text-slate-500 italic text-[11px]">${r.comment || r.commentaire || ''}</td>
             `;
             tbody.appendChild(tr);
         });
@@ -184,43 +240,36 @@
 
     function calculateTime() {
         let totalAcq = 0;
-        let techniques = {};
+        const techniques = {};
 
         document.querySelectorAll('.row-checkbox:checked').forEach(cb => {
             totalAcq += parseInt(cb.dataset.acq) || 0;
             const tech = cb.dataset.tech;
             const mount = parseInt(cb.dataset.mount) || 0;
-            if (tech && !techniques[tech]) {
+            if (tech && techniques[tech] === undefined) {
                 techniques[tech] = mount;
             }
         });
 
-        let totalMount = Object.values(techniques).reduce((a, b) => a + b, 0);
-        let grandTotal = totalAcq + totalMount;
+        const totalMount = Object.values(techniques).reduce((a, b) => a + b, 0);
+        const grandTotal = totalAcq + totalMount;
 
-        let text = grandTotal + " min";
+        let text = grandTotal + ' min';
         if (grandTotal >= 60) {
-            let h = Math.floor(grandTotal / 60);
-            let m = grandTotal % 60;
+            const h = Math.floor(grandTotal / 60);
+            const m = grandTotal % 60;
             text = `${h}h${m.toString().padStart(2, '0')}`;
         }
-
         document.getElementById('total-time-badge').innerText = text;
     }
 
-    // Gestion du Select All
-    document.getElementById('check-all').addEventListener('change', function() {
-        const isChecked = this.checked;
-        document.querySelectorAll('.row-checkbox').forEach(cb => cb.checked = isChecked);
-        calculateTime();
-    });
-
-    document.getElementById('dashboard-table-body').addEventListener('change', function(e) {
+    document.getElementById('dashboard-table-body').addEventListener('change', function (e) {
         if (e.target.classList.contains('row-checkbox')) {
-            if (!e.target.checked) document.getElementById('check-all').checked = false;
-            else {
+            const checkAll = document.getElementById('check-all');
+            if (!e.target.checked && checkAll) checkAll.checked = false;
+            else if (checkAll) {
                 const allChecked = Array.from(document.querySelectorAll('.row-checkbox')).every(cb => cb.checked);
-                document.getElementById('check-all').checked = allChecked;
+                checkAll.checked = allChecked;
             }
             calculateTime();
         }
@@ -228,44 +277,40 @@
 
     function renderPrepTable(rows) {
         const tbody = document.getElementById('prep-table-body');
-        document.getElementById('prep-count').innerText = rows.length;
+        document.getElementById('prep-count').innerText = (rows || []).length;
         tbody.innerHTML = '';
 
-        rows.forEach(r => {
+        (rows || []).forEach(r => {
             const tr = document.createElement('tr');
             tr.className = 'hover:bg-slate-50 dark:hover:bg-slate-800/50';
             tr.innerHTML = `
-                <td class="p-2 font-mono font-bold text-slate-900 dark:text-slate-100">${r.patient_id}</td>
-                <td class="p-2 font-semibold">${r.patient_name}</td>
-                <td class="p-2 text-cyan-600 dark:text-cyan-400 font-medium">${r.task_name}</td>
-                <td class="p-2 font-mono text-slate-500">${r.due_date}</td>
-                <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200">${r.status}</span></td>
+                <td class="p-2 font-mono font-bold text-slate-900 dark:text-slate-100">${r.patient_id || ''}</td>
+                <td class="p-2 font-semibold">${r.patient_name || ''}</td>
+                <td class="p-2 text-cyan-600 dark:text-cyan-400 font-medium">${r.task_name || ''}</td>
+                <td class="p-2 font-mono text-slate-500">${r.due_date || ''}</td>
+                <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200">${r.status || ''}</span></td>
             `;
             tbody.appendChild(tr);
         });
     }
 
-    // Changement de style des onglets
     document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.addEventListener('click', function() {
+        btn.addEventListener('click', function () {
             document.querySelectorAll('.tab-btn').forEach(b => {
-                // Remet le style inactif
                 b.className = "tab-btn px-5 py-2.5 rounded-lg text-sm font-bold transition-all border-2 border-transparent text-slate-600 bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700";
             });
-            // Applique le style actif (couleur, ombre, etc)
             this.className = "tab-btn px-5 py-2.5 rounded-lg text-sm font-bold transition-all border-2 border-transparent ring-2 ring-cyan-500 ring-offset-2 ring-offset-slate-100 dark:ring-offset-slate-900 bg-cyan-600 text-white dark:bg-cyan-600 dark:text-white";
-
             activeTab = this.getAttribute('data-tab');
             loadData();
         });
     });
 
-    document.getElementById('prep-header').addEventListener('click', function() {
+    document.getElementById('prep-header').addEventListener('click', function () {
         document.getElementById('prep-body').classList.toggle('hidden');
         document.getElementById('prep-chevron').classList.toggle('rotate-180');
     });
 
-    document.getElementById('scan-btn').addEventListener('click', function() {
+    document.getElementById('scan-btn').addEventListener('click', function () {
         this.disabled = true;
         this.innerHTML = `<i class="fa-solid fa-spinner fa-spin mr-2"></i> Scan en cours...`;
         fetch('/api/scan', { method: 'POST' })
@@ -274,14 +319,29 @@
                 alert(`Scan terminé: ${res.found_new} nouveaux fichiers détectés.`);
                 loadData();
             })
+            .catch(err => alert('Erreur scan: ' + err))
             .finally(() => {
                 this.disabled = false;
                 this.innerHTML = `<i class="fa-solid fa-network-wired mr-2"></i> Scan réseau IUCT`;
             });
     });
 
+    // Filtre recherche patient (client-side)
+    const searchInput = document.getElementById('search-input');
+    if (searchInput) {
+        searchInput.addEventListener('input', function () {
+            const q = this.value.trim().toLowerCase();
+            document.querySelectorAll('#dashboard-table-body tr').forEach(tr => {
+                const text = tr.innerText.toLowerCase();
+                tr.style.display = !q || text.includes(q) ? '' : 'none';
+            });
+        });
+    }
+
     document.getElementById('refresh-btn').addEventListener('click', loadData);
 
+    // Premier rendu header + data
+    buildThead(configuredExtensions);
     loadData();
     setInterval(loadData, 60000);
 </script>

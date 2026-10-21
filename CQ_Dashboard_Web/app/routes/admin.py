@@ -9,7 +9,7 @@ from app.models_local import db_local, Setting, CQTab, CQMachine
 admin_bp = Blueprint('admin', __name__)
 
 DB_KEYS = ['MYSQL_HOST', 'MYSQL_PORT', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DB']
-GLOBAL_KEYS = ['ADMIN_PASSWORD', 'LOOKBACK_DAYS', 'SCAN_DEPTH', 'SCANDIDOS_SIGNATURE']
+GLOBAL_KEYS = ['ADMIN_PASSWORD', 'LOOKBACK_DAYS', 'SCAN_DEPTH', 'SCANDIDOS_SIGNATURE', 'YEAR_OVERLAP_DAYS']
 
 
 @admin_bp.before_request
@@ -96,6 +96,7 @@ def save_tab():
     network_paths_csv = request.form.get('network_paths_csv', '')
     file_extensions_csv = request.form.get('file_extensions_csv', '.dcm, .pdf')
     default_energy = request.form.get('default_energy', '').strip()
+    grouped_by_year = request.form.get('grouped_by_year') == 'on'
 
     network_paths = [p.strip() for p in network_paths_csv.split(',') if p.strip()]
     file_extensions = [e.strip().lower() if e.strip().startswith('.') else '.' + e.strip().lower()
@@ -112,7 +113,8 @@ def save_tab():
     tab.set_config(
         network_paths=network_paths,
         file_extensions=file_extensions,
-        default_energy=default_energy
+        default_energy=default_energy,
+        grouped_by_year=grouped_by_year
     )
 
     db_local.session.add(tab)
