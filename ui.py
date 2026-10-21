@@ -1,4 +1,5 @@
-﻿from datetime import datetime
+﻿# ui.py
+from datetime import datetime
 from PySide6.QtWidgets import (QMainWindow, QTabWidget, QTableWidget, QTableWidgetItem, QWidget, QLabel, QPushButton, QStatusBar, QVBoxLayout, QHBoxLayout, QCheckBox, QMessageBox)
 from PySide6.QtGui import QBrush
 from PySide6.QtCore import QTimer, Qt
