@@ -353,29 +353,47 @@ def build_dashboard_data(tab_name=None):
         focus = str(r.get("task_display_focus") or "")
         focus_lower = focus.lower()
 
-        # On récupère Acquisition, Montage et Nom de la technique
         acq_time, mount_time, tech_name = find_technique_rules(focus_lower, techniques)
         energy = active_tab.get_default_energy()
+
+        # --- Recherche dans le cache du Scan Réseau ---
+        scan_dcm = ScanCache.query.filter_by(patient_id=ipp, file_type='DICOM').first()
+        scan_pdf = ScanCache.query.filter_by(patient_id=ipp, file_type='PDF').first()
+
+        # Récupération du nom du dossier où on a trouvé les fichiers
+        folder_name = "-"
+        if scan_dcm and scan_dcm.file_path:
+            folder_name = os.path.basename(os.path.dirname(scan_dcm.file_path))
+        elif scan_pdf and scan_pdf.file_path:
+            folder_name = os.path.basename(os.path.dirname(scan_pdf.file_path))
+
+        # TODO (prochaine étape) : extraire ça du fichier DICOM
+        localisation = "À venir..."
 
         main_rows.append({
             'patient_id': ipp,
             'last_name': str(r.get("last_name") or "").upper(),
             'first_name': str(r.get("first_name") or ""),
-            'machine': active_tab.label,
-            'scheduled_time': met.strftime('%H:%M') if met else '',
+            
+            # --- Nouvelles colonnes ---
+            'localisation': localisation,
+            'dcm': '✅' if scan_dcm else '❌',
+            'pdf': '✅' if scan_pdf else '❌',
+            'folder': folder_name,
+            
             'met_date': met.strftime('%Y-%m-%d %H:%M') if met else '',
             'met_color': row_color(met, now, limit),
-            'scandidos': '✅' if ScanCache.query.filter_by(patient_id=ipp, file_type='DICOM').first() else '❌',
-            'pdf': '✅' if ScanCache.query.filter_by(patient_id=ipp, file_type='PDF').first() else '❌',
             'energy': energy,
             'technique': focus,
             'status': str(r.get("task_status") or ""),
-            'base_duration': acq_time,       # Acquisition (min)
-            'mount_duration': mount_time,    # Montage (min)
-            'tech_name': tech_name,          # Nom pour le regroupement
-            'comment': str(r.get("task_note") or ""),
-            'physicist': str(r.get("physicist") or ""),
+            
+            # Variables cachées utilisées par le Javascript
+            'base_duration': acq_time,
+            'mount_duration': mount_time,
+            'tech_name': tech_name,
+            
             'timeplanner': '✅' if r.get("Timeplanner") else '❌',
+            'comment': str(r.get("task_note") or "")
         })
 
     prep_rows = []
