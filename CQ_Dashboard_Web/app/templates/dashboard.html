@@ -343,6 +343,8 @@
 
     // DESSINER LE MINI-CALENDRIER DANS LA SIDEBAR
     // État du mois affiché dans le mini-calendrier
+    // DESSINER LE MINI-CALENDRIER DANS LA SIDEBAR
+    // État du mois affiché dans le mini-calendrier
     let calViewYear = new Date().getFullYear();
     let calViewMonth = new Date().getMonth(); // 0-11
     let lastCalendarRows = []; // mémorise les rows pour redessiner sans recharger l'API
@@ -351,13 +353,22 @@
         const calContainer = document.getElementById('mini-calendar-container');
         if (!calContainer) return;
 
-        // Garde les données MET pour pouvoir naviguer sans refetch
         if (rows) lastCalendarRows = rows;
 
-        const metDates = new Set();
+        // AGRÉGATION PAR DATE (Comptage + Détection de la couleur d'urgence)
+        const dateStats = {};
         (lastCalendarRows || []).forEach(r => {
             if (r.raw_met_date) {
-                metDates.add(String(r.raw_met_date).substring(0, 10)); // YYYY-MM-DD
+                const yyyymmdd = String(r.raw_met_date).substring(0, 10);
+                if (!dateStats[yyyymmdd]) {
+                    dateStats[yyyymmdd] = { count: 0, hasRed: false, hasOrange: false, hasGreen: false };
+                }
+                dateStats[yyyymmdd].count++;
+
+                // Déduit l'urgence via les classes Tailwind envoyées par le backend
+                if (r.met_color && r.met_color.includes('red')) dateStats[yyyymmdd].hasRed = true;
+                else if (r.met_color && r.met_color.includes('orange')) dateStats[yyyymmdd].hasOrange = true;
+                else dateStats[yyyymmdd].hasGreen = true;
             }
         });
 
@@ -372,42 +383,39 @@
         const monthName = new Date(year, month, 1)
             .toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
 
-        // Y a-t-il au moins un MET sur ce mois affiché ?
         const monthPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
-        const hasAnyMetThisMonth = [...metDates].some(d => d.startsWith(monthPrefix));
+        const hasAnyMetThisMonth = Object.keys(dateStats).some(d => d.startsWith(monthPrefix));
 
         let html = `<div class="bg-slate-800/80 rounded-xl p-3 text-xs shadow-sm border border-slate-700/60">`;
 
         // En-tête avec flèches < mois >
         html += `
-      <div class="flex items-center justify-between mb-2">
-        <button type="button" id="cal-prev-month"
-                class="w-6 h-6 flex items-center justify-center rounded hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
-                title="Mois précédent">
-          <i class="fa-solid fa-chevron-left text-[10px]"></i>
-        </button>
-        <div class="text-center font-bold text-slate-200 capitalize text-[11px] tracking-wide truncate px-1">
-          ${monthName}
-        </div>
-        <button type="button" id="cal-next-month"
-                class="w-6 h-6 flex items-center justify-center rounded hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
-                title="Mois suivant">
-          <i class="fa-solid fa-chevron-right text-[10px]"></i>
-        </button>
-      </div>`;
+        <div class="flex items-center justify-between mb-2">
+            <button type="button" id="cal-prev-month" class="w-6 h-6 flex items-center justify-center rounded hover:bg-slate-700 text-slate-300 hover:text-white transition-colors" title="Mois précédent">
+                <i class="fa-solid fa-chevron-left text-[10px]"></i>
+            </button>
+            <div class="text-center font-bold text-slate-200 capitalize text-[11px] tracking-wide truncate px-1">
+                ${monthName}
+            </div>
+            <button type="button" id="cal-next-month" class="w-6 h-6 flex items-center justify-center rounded hover:bg-slate-700 text-slate-300 hover:text-white transition-colors" title="Mois suivant">
+                <i class="fa-solid fa-chevron-right text-[10px]"></i>
+            </button>
+        </div>`;
 
+        // En-têtes Jours
         html += `<div class="grid grid-cols-7 gap-1 text-center mb-1 text-slate-400 font-semibold text-[10px]">
-        <div>L</div><div>M</div><div>M</div><div>J</div><div>V</div><div>S</div><div>D</div>
-    </div><div class="grid grid-cols-7 gap-1 text-center text-[11px]">`;
+            <div>L</div><div>M</div><div>M</div><div>J</div><div>V</div><div>S</div><div>D</div>
+        </div><div class="grid grid-cols-7 gap-1 text-center text-[11px]">`;
 
         for (let i = 0; i < startOffset; i++) {
             html += `<div></div>`;
         }
 
+        // Remplissage des jours
         for (let d = 1; d <= daysInMonth; d++) {
             const yyyymmdd = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
             const isToday = (d === today.getDate() && month === today.getMonth() && year === today.getFullYear());
-            const hasMet = metDates.has(yyyymmdd);
+            const stat = dateStats[yyyymmdd];
 
             let classes = "w-6 h-6 flex flex-col items-center justify-center rounded-full mx-auto relative cursor-default ";
             if (isToday) {
@@ -416,71 +424,68 @@
                 classes += "text-slate-300 font-medium hover:bg-slate-700/50 ";
             }
 
-            const dot = hasMet
-                ? `<span class="absolute -bottom-0.5 w-1.5 h-1.5 bg-amber-400 rounded-full"></span>`
-                : ``;
+            let badge = "";
+            let tooltip = "";
 
-            html += `<div class="${classes}" title="${hasMet ? 'MET planifié' : ''}">${d}${dot}</div>`;
+            if (stat) {
+                // Définition de la priorité la plus haute pour la couleur du badge
+                let badgeColor = "bg-emerald-500";
+                if (stat.hasRed) {
+                    badgeColor = "bg-red-500";
+                    tooltip = `${stat.count} CQ planifié(s) dont URGENCE / DÉPASSÉ`;
+                } else if (stat.hasOrange) {
+                    badgeColor = "bg-orange-500";
+                    tooltip = `${stat.count} CQ planifié(s) dont au moins 1 URGENT`;
+                } else {
+                    tooltip = `${stat.count} CQ planifié(s)`;
+                }
+
+                badge = `<span class="absolute -bottom-1 -right-1 min-w-[14px] h-[14px] px-0.5 ${badgeColor} border border-slate-800 text-white text-[9px] font-bold rounded-full flex items-center justify-center shadow-sm z-10 leading-none">${stat.count}</span>`;
+            }
+
+            html += `<div class="${classes}" title="${tooltip}">${d}${badge}</div>`;
         }
 
         html += `</div>`;
 
-        // Petit hint si aucun MET ce mois-ci
         if (!hasAnyMetThisMonth) {
-            html += `<div class="mt-2 text-center text-[9px] text-slate-500 italic">Aucun MET ce mois</div>`;
+            html += `<div class="mt-2 text-center text-[9px] text-slate-500 italic">Aucun patient ce mois</div>`;
         }
 
-        // Bouton "Aujourd'hui" si on n'est pas sur le mois courant
         const isCurrentMonth = (month === today.getMonth() && year === today.getFullYear());
         if (!isCurrentMonth) {
-            html += `
-          <button type="button" id="cal-today-btn"
-                  class="mt-2 w-full py-1 rounded text-[10px] font-semibold bg-slate-700 hover:bg-cyan-600 text-slate-200 hover:text-white transition-colors">
-            Aujourd'hui
-          </button>`;
+            html += `<button type="button" id="cal-today-btn" class="mt-2 w-full py-1 rounded text-[10px] font-semibold bg-slate-700 hover:bg-cyan-600 text-slate-200 hover:text-white transition-colors">Aujourd'hui</button>`;
         }
 
         html += `</div>`;
         calContainer.innerHTML = html;
 
-        // Listeners navigation (re-branchés à chaque rendu)
+        // Navigation Events
         const prevBtn = document.getElementById('cal-prev-month');
         const nextBtn = document.getElementById('cal-next-month');
         const todayBtn = document.getElementById('cal-today-btn');
 
         if (prevBtn) {
             prevBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
+                e.preventDefault(); e.stopPropagation();
                 calViewMonth -= 1;
-                if (calViewMonth < 0) {
-                    calViewMonth = 11;
-                    calViewYear -= 1;
-                }
-                renderMiniCalendar(); // sans nouvel argument → utilise lastCalendarRows
-            });
-        }
-
-        if (nextBtn) {
-            nextBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                calViewMonth += 1;
-                if (calViewMonth > 11) {
-                    calViewMonth = 0;
-                    calViewYear += 1;
-                }
+                if (calViewMonth < 0) { calViewMonth = 11; calViewYear -= 1; }
                 renderMiniCalendar();
             });
         }
-
+        if (nextBtn) {
+            nextBtn.addEventListener('click', (e) => {
+                e.preventDefault(); e.stopPropagation();
+                calViewMonth += 1;
+                if (calViewMonth > 11) { calViewMonth = 0; calViewYear += 1; }
+                renderMiniCalendar();
+            });
+        }
         if (todayBtn) {
             todayBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
+                e.preventDefault(); e.stopPropagation();
                 const now = new Date();
-                calViewYear = now.getFullYear();
-                calViewMonth = now.getMonth();
+                calViewYear = now.getFullYear(); calViewMonth = now.getMonth();
                 renderMiniCalendar();
             });
         }

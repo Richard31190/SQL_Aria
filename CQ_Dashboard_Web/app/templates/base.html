@@ -1,6 +1,6 @@
 <!-- templates\base.html -->
 <!DOCTYPE html>
-<html lang="fr" class="dark">
+<html lang="fr" class="dark h-full">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -38,10 +38,14 @@
         }
     </script>
 </head>
-<body class="bg-slate-100 dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-sans antialiased min-h-screen flex">
 
-    <!-- Sidebar -->
-    <aside class="w-64 bg-slate-900 text-slate-300 flex flex-col shrink-0 border-r border-slate-800 min-h-screen">
+<!-- h-screen + overflow-hidden : la page ne grandit plus avec le tableau -->
+<body class="bg-slate-100 dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-sans antialiased h-screen overflow-hidden flex">
+
+    <!-- Sidebar FIXÉE à la hauteur de l'écran -->
+    <aside class="w-64 h-screen sticky top-0 bg-slate-900 text-slate-300 flex flex-col shrink-0 border-r border-slate-800 overflow-hidden">
+
+        <!-- Logo -->
         <div class="h-16 flex items-center justify-between px-4 bg-slate-950 border-b border-slate-800 shrink-0">
             <div class="flex items-center space-x-3">
                 <i class="fa-solid fa-radiation text-2xl text-cyan-400"></i>
@@ -49,7 +53,8 @@
             </div>
         </div>
 
-        <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+        <!-- Navigation (peut scroller si beaucoup d'onglets un jour) -->
+        <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto min-h-0">
             <a href="/" class="flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors hover:bg-slate-800 hover:text-white {% if not request.endpoint or request.endpoint == 'main.index' or request.endpoint == 'index' %}bg-slate-800 text-cyan-400 border-l-4 border-cyan-400{% endif %}">
                 <i class="fa-solid fa-list-check w-6 text-center text-lg"></i>
                 <span class="ml-2">Machines</span>
@@ -61,9 +66,10 @@
             </a>
         </nav>
 
-        <!-- Conteneur pour le mini-calendrier dynamique (placé au-dessus du footer de la sidebar) -->
+        <!-- Mini-calendrier : toujours visible, collé en bas de la sidebar -->
         <div id="mini-calendar-container" class="px-3 py-2 w-full shrink-0"></div>
 
+        <!-- Footer sidebar -->
         <div class="p-4 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400 shrink-0">
             <span>IUCT Oncopole</span>
             <button id="theme-toggle" class="p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white focus:outline-none">
@@ -73,8 +79,8 @@
         </div>
     </aside>
 
-    <!-- Main Content Area -->
-    <main class="flex-1 flex flex-col min-w-0 overflow-y-auto">
+    <!-- Zone principale : SEULE cette zone scroll quand le tableau est long -->
+    <main class="flex-1 min-w-0 h-screen overflow-y-auto">
         {% block content %}{% endblock %}
     </main>
 
