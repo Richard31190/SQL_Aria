@@ -5,7 +5,7 @@ CQ Dashboard — Logique Métier Précise & Filtrée
 - Découpage automatique & intelligent des extensions Admin (.dcm, .pdf, JSON, etc.)
 - Traversal d'arborescence : IPP détecté dans le dossier parent (ex: Nompatient_12345/Calcul/xxx.pdf)
 - Indépendance vis-à-vis du nom du fichier (recherche par extension uniquement)
-- Tri par priorité (Date MET)
+- Tri par priority (Date MET)
 - Calcul jours ouvrés (Urgence de la tâche)
 - Code couleur de criticité dynamique
 - Timeplanner = CQ Patient programmé AUJOURD'HUI sur la machine
@@ -18,6 +18,9 @@ from datetime import datetime, date, timedelta
 from collections import defaultdict
 
 from app.models_local import db_local, CQTab, CQMachine, ScanCache, Setting
+
+# Horodatage du dernier scan en mémoire
+_LAST_SCAN_TIME = None
 
 # Driver MySQL
 _MYSQL_DRIVER = None
@@ -90,14 +93,12 @@ def _parse_extensions(raw) -> list:
     items = []
     if isinstance(raw, str):
         s = raw.strip()
-        # Si c'est un format JSON '[".dcm", ".pdf"]'
         if (s.startswith("[") and s.endswith("]")) or (s.startswith("(") and s.endswith(")")):
             try:
                 parsed = json.loads(s)
                 return _parse_extensions(parsed)
             except Exception:
                 pass
-        # Découpe par virgule, point-virgule, pipe, slash ou espace
         items = re.split(r"[,;|\s]+", s)
     elif isinstance(raw, (list, tuple, set)):
         for item in raw:
@@ -203,17 +204,13 @@ def extract_ipp_candidates(text: str) -> list:
     """
     Extrait les numéros d'IPP (séquences de 3 à 10 chiffres).
     Ignore les sous-dossiers qui ne sont que des années (ex: 2024, 2025, 2026).
-    Supporte les tirets et underscores (ex: NOM_PRENOM_12345, 12345_Calcul).
     """
     if not text:
         return []
 
-    # Utilise un lookbehind/lookahead négatif pour éviter l'échec des \b avec underscore
     matches = re.findall(r"(?<!\d)\d{3,10}(?!\d)", str(text))
-
     out = []
     for m in matches:
-        # Si le segment est uniquement une année isolée entre 1990 et 2035, l'ignorer
         if len(m) == 4 and 1990 <= int(m) <= 2035 and str(text).strip() == m:
             continue
         out.append(m)
@@ -392,6 +389,7 @@ def business_days_between(d1: datetime, d2: datetime) -> int:
 # ===========================================================================
 
 def perform_network_scan() -> int:
+    global _LAST_SCAN_TIME
     print("=== DEBUT perform_network_scan ===")
 
     try:
@@ -450,7 +448,6 @@ def perform_network_scan() -> int:
             else cfg.get("file_extensions", [".dcm", ".pdf"])
         )
 
-        # Découpage intelligent de toutes les extensions configurées (.dcm, .pdf, etc.)
         valid_exts = tuple(_parse_extensions(file_exts_raw) or [".dcm", ".pdf"])
 
         grouped_by_year = cfg.get("grouped_by_year", False)
@@ -461,7 +458,6 @@ def perform_network_scan() -> int:
             if not os.path.isdir(base_path):
                 continue
 
-            # Nom affiché DOSSIER = dernier segment du chemin Admin (ex: Patients_stereo_EC_IUC)
             display_root = os.path.basename(os.path.normpath(base_path))
 
             root_paths_to_scan = []
@@ -483,18 +479,15 @@ def perform_network_scan() -> int:
                         dirnames[:] = []
                         continue
 
-                    # IPP extrait dans le dossier patient parent ou actuel
                     _folder_name, path_ipps = find_patient_folder_info(dirpath, root_path)
 
                     for fname in filenames:
-                        # Test d'extension insensible à la casse (.pdf == .PDF)
                         f_ext = _normalize_ext(os.path.splitext(fname)[1])
                         if f_ext not in valid_exts:
                             continue
 
                         target_ipps = path_ipps
                         if not target_ipps:
-                            # Fallback : recherche d'IPP dans le nom de fichier lui-même
                             target_ipps = [
                                 _clean_ipp(i)
                                 for i in extract_ipp_candidates(fname)
@@ -533,6 +526,7 @@ def perform_network_scan() -> int:
 
     try:
         db_local.session.commit()
+        _LAST_SCAN_TIME = datetime.now()
         print(f"=== FIN SCAN : {scanned_count} fichiers indexés ===")
     except Exception:
         db_local.session.rollback()
@@ -947,6 +941,8 @@ def _fetch_imminent_prep_rows(lookback_days: int, tabs: list) -> list:
 # ===========================================================================
 
 def build_dashboard_data(tab_name=None) -> dict:
+    global _LAST_SCAN_TIME
+
     settings = get_global_settings()
     try:
         lookback_days = int(settings.get("LOOKBACK_DAYS", 14) or 14)
@@ -963,6 +959,20 @@ def build_dashboard_data(tab_name=None) -> dict:
     except ValueError:
         scan_interval_min = 3
 
+    # ---------------------------------------------------------------
+    # GESTION AUTOMATIQUE DU SCAN RÉSEAU (au lancement & à intervalle)
+    # ---------------------------------------------------------------
+    cache_needs_refresh = False
+    if _LAST_SCAN_TIME is None or ScanCache.query.count() == 0:
+        cache_needs_refresh = True
+    else:
+        time_since_last = datetime.now() - _LAST_SCAN_TIME
+        if time_since_last > timedelta(minutes=scan_interval_min):
+            cache_needs_refresh = True
+
+    if cache_needs_refresh:
+        perform_network_scan()
+
     tabs = CQTab.query.order_by(CQTab.display_order).all()
     machines = CQMachine.query.order_by(CQMachine.display_order).all()
 
@@ -970,9 +980,6 @@ def build_dashboard_data(tab_name=None) -> dict:
     timeplanner_ipps = _fetch_timeplanner_cq_ipps_today(tabs)
 
     configured_extensions = get_configured_extensions(tab_name if tab_name else None)
-
-    if ScanCache.query.count() == 0:
-        perform_network_scan()
 
     raw_rows = _fetch_aria_activity_rows(lookback_days)
 
@@ -1020,9 +1027,7 @@ def build_dashboard_data(tab_name=None) -> dict:
 
         folder_name = _folder_from_scans(scans, fallback="") if scans else "-"
 
-        # ---------------------------------------------------------------
-        # TIMEPLANNER = CQ programmé AUJOURD'HUI
-        # ---------------------------------------------------------------
+        # Timeplanner = CQ programmé aujourd'hui
         ipp_clean = _clean_ipp(ipp)
         is_on_timeplanner = ipp_clean in timeplanner_ipps
 
@@ -1036,9 +1041,7 @@ def build_dashboard_data(tab_name=None) -> dict:
             )
         )
 
-        # ---------------------------------------------------------------
         # MET = urgence + tri
-        # ---------------------------------------------------------------
         sort_val = datetime.max
         raw_met_date_str = None
         met_color = (
