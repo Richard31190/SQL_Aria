@@ -1,13 +1,14 @@
-# *** services\business.py ***
 # *** services/business.py ***
 # -*- coding: utf-8 -*-
 """
 CQ Dashboard — Logique Métier Précise & Filtrée
-- Traversal d'arborescence : IPP détecté dans le dossier parent (ex: Nompatient_IPP/Calcul/xxx.dcm)
+- Découpage automatique & intelligent des extensions Admin (.dcm, .pdf, JSON, etc.)
+- Traversal d'arborescence : IPP détecté dans le dossier parent (ex: Nompatient_12345/Calcul/xxx.pdf)
+- Indépendance vis-à-vis du nom du fichier (recherche par extension uniquement)
 - Tri par priorité (Date MET)
 - Calcul jours ouvrés (Urgence de la tâche)
 - Code couleur de criticité dynamique
-- Timeplanner = CQ Patient programmé AUJOURD'HUI sur la machine (indépendant du MET)
+- Timeplanner = CQ Patient programmé AUJOURD'HUI sur la machine
 """
 import os
 import re
@@ -64,6 +65,57 @@ def _clean_ipp(ipp_str: str) -> str:
         return ""
     cleaned = str(ipp_str).strip().lstrip("0")
     return cleaned if cleaned else "0"
+
+
+def _normalize_ext(ext: str) -> str:
+    """Consolide une extension : ' PDF ' -> '.pdf'"""
+    if not ext:
+        return ""
+    e = str(ext).strip().lower()
+    if not e:
+        return ""
+    if not e.startswith("."):
+        e = "." + e
+    return e
+
+
+def _parse_extensions(raw) -> list:
+    """
+    Analyse n'importe quelle saisie Admin (JSON, chaîne '.pdf , .dcm', liste...)
+    et extrait individuellement chaque extension propre : ['.pdf', '.dcm']
+    """
+    if raw is None:
+        return []
+
+    items = []
+    if isinstance(raw, str):
+        s = raw.strip()
+        # Si c'est un format JSON '[".dcm", ".pdf"]'
+        if (s.startswith("[") and s.endswith("]")) or (s.startswith("(") and s.endswith(")")):
+            try:
+                parsed = json.loads(s)
+                return _parse_extensions(parsed)
+            except Exception:
+                pass
+        # Découpe par virgule, point-virgule, pipe, slash ou espace
+        items = re.split(r"[,;|\s]+", s)
+    elif isinstance(raw, (list, tuple, set)):
+        for item in raw:
+            if isinstance(item, str) and any(c in item for c in (",", ";", "|", " ")):
+                items.extend(re.split(r"[,;|\s]+", item))
+            else:
+                items.append(item)
+    else:
+        items = [str(raw)]
+
+    out = []
+    seen = set()
+    for item in items:
+        cleaned = _normalize_ext(item)
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            out.append(cleaned)
+    return out
 
 
 def match_tab_keyword(keyword: str, text: str) -> bool:
@@ -148,10 +200,25 @@ def get_mysql_connection(cfg: dict = None):
 
 
 def extract_ipp_candidates(text: str) -> list:
-    """Extrait les numéros de 5 chiffres ou plus."""
+    """
+    Extrait les numéros d'IPP (séquences de 3 à 10 chiffres).
+    Ignore les sous-dossiers qui ne sont que des années (ex: 2024, 2025, 2026).
+    Supporte les tirets et underscores (ex: NOM_PRENOM_12345, 12345_Calcul).
+    """
     if not text:
         return []
-    return list(set(re.findall(r"\b\d{5,}\b", str(text))))
+
+    # Utilise un lookbehind/lookahead négatif pour éviter l'échec des \b avec underscore
+    matches = re.findall(r"(?<!\d)\d{3,10}(?!\d)", str(text))
+
+    out = []
+    for m in matches:
+        # Si le segment est uniquement une année isolée entre 1990 et 2035, l'ignorer
+        if len(m) == 4 and 1990 <= int(m) <= 2035 and str(text).strip() == m:
+            continue
+        out.append(m)
+
+    return list(set(out))
 
 
 def find_patient_folder_info(dirpath: str, root_path: str):
@@ -167,7 +234,7 @@ def find_patient_folder_info(dirpath: str, root_path: str):
     if rel == ".":
         parts = []
     else:
-        parts = rel.split(os.sep)
+        parts = [p for p in rel.replace("/", os.sep).split(os.sep) if p and p != "."]
 
     for part in parts:
         ipps = extract_ipp_candidates(part)
@@ -224,15 +291,8 @@ def get_configured_extensions(tab_label=None) -> list:
     for tab in tabs:
         if tab_label and tab.label != tab_label:
             continue
-        exts = tab.get_file_extensions()
-        if isinstance(exts, str):
-            exts = [e.strip() for e in exts.split(",") if e.strip()]
-        for ext in exts:
-            e = str(ext).strip().lower()
-            if not e:
-                continue
-            if not e.startswith("."):
-                e = "." + e
+        exts = tab.get_file_extensions() if hasattr(tab, "get_file_extensions") else None
+        for e in _parse_extensions(exts):
             if e not in seen:
                 seen.add(e)
                 ordered.append(e)
@@ -276,10 +336,24 @@ def _scans_for_patient(ipp: str) -> list:
 
 
 def _ext_status_for_scans(scans, configured_extensions: list) -> dict:
-    found = {(s.file_type or "").lower() for s in scans}
+    found = set()
+    for s in scans:
+        ft = _normalize_ext(s.file_type or "")
+        if ft:
+            found.add(ft)
+        if getattr(s, "file_name", None):
+            ft2 = _normalize_ext(os.path.splitext(s.file_name)[1])
+            if ft2:
+                found.add(ft2)
+        if getattr(s, "file_path", None):
+            ft3 = _normalize_ext(os.path.splitext(s.file_path)[1])
+            if ft3:
+                found.add(ft3)
+
+    parsed_configured = _parse_extensions(configured_extensions) or [".dcm", ".pdf"]
     status = {}
-    for ext in configured_extensions:
-        status[ext] = True if ext in found else False
+    for ext in parsed_configured:
+        status[ext] = ext in found
     return status
 
 
@@ -370,21 +444,14 @@ def perform_network_scan() -> int:
                 if p.strip()
             ]
 
-        file_exts = (
+        file_exts_raw = (
             tab.get_file_extensions()
             if hasattr(tab, "get_file_extensions")
             else cfg.get("file_extensions", [".dcm", ".pdf"])
         )
-        if isinstance(file_exts, str):
-            file_exts = [e.strip() for e in file_exts.split(",") if e.strip()]
 
-        valid_exts = tuple(
-            e.lower() if e.startswith(".") else f".{e.lower()}"
-            for e in file_exts
-            if e
-        )
-        if not valid_exts:
-            valid_exts = (".dcm", ".pdf")
+        # Découpage intelligent de toutes les extensions configurées (.dcm, .pdf, etc.)
+        valid_exts = tuple(_parse_extensions(file_exts_raw) or [".dcm", ".pdf"])
 
         grouped_by_year = cfg.get("grouped_by_year", False)
         if hasattr(tab, "grouped_by_year"):
@@ -394,7 +461,7 @@ def perform_network_scan() -> int:
             if not os.path.isdir(base_path):
                 continue
 
-            # Nom affiché DOSSIER = dernier segment du chemin Admin
+            # Nom affiché DOSSIER = dernier segment du chemin Admin (ex: Patients_stereo_EC_IUC)
             display_root = os.path.basename(os.path.normpath(base_path))
 
             root_paths_to_scan = []
@@ -416,17 +483,18 @@ def perform_network_scan() -> int:
                         dirnames[:] = []
                         continue
 
-                    # IPP dans le dossier patient parent (ex: Nom_IPP/Calcul/xxx.dcm)
+                    # IPP extrait dans le dossier patient parent ou actuel
                     _folder_name, path_ipps = find_patient_folder_info(dirpath, root_path)
 
                     for fname in filenames:
-                        f_ext = os.path.splitext(fname)[1].lower()
+                        # Test d'extension insensible à la casse (.pdf == .PDF)
+                        f_ext = _normalize_ext(os.path.splitext(fname)[1])
                         if f_ext not in valid_exts:
                             continue
 
                         target_ipps = path_ipps
                         if not target_ipps:
-                            # Fallback : IPP dans le nom de fichier
+                            # Fallback : recherche d'IPP dans le nom de fichier lui-même
                             target_ipps = [
                                 _clean_ipp(i)
                                 for i in extract_ipp_candidates(fname)
@@ -494,10 +562,6 @@ def _is_cq_ready_task(display_focus: str, status: str) -> bool:
 
 
 def _fetch_aria_activity_rows(lookback_days: int) -> list:
-    """
-    Tâches CQ + date MET (séparée du Timeplanner).
-    MET = prochain RDV service_type MET (futur prioritaire, sinon plus récent passé).
-    """
     query = """
         SELECT
             t.id                                            AS task_id,
@@ -568,7 +632,6 @@ def _fetch_aria_activity_rows(lookback_days: int) -> list:
 # ===========================================================================
 
 def _is_cq_patient_activity(text: str) -> bool:
-    """Détecte une activité / tâche de type 'CQ Patient' dans le programme machine."""
     n = normalize(text or "")
     if not n:
         return False
@@ -584,19 +647,10 @@ def _is_cq_patient_activity(text: str) -> bool:
 
 
 def _fetch_timeplanner_cq_ipps_today(tabs: list) -> set:
-    """
-    Programme du JOUR :
-    1) liste les RDV / activités d'aujourd'hui
-    2) garde ceux de type CQ Patient
-    3) optionnellement filtre par machine (mots-clés onglets Admin)
-    4) retourne le set d'IPP nettoyés
-    """
     cfg = get_aria_mysql_config()
     ipps = set()
 
-    # Requêtes candidates (schémas ARIA variables) — on tente du plus riche au plus simple
     queries = [
-        # A — service_type + notes + ressource machine
         """
         SELECT
             COALESCE(p.ipp, CAST(p.id AS CHAR)) AS ipp,
@@ -609,7 +663,6 @@ def _fetch_timeplanner_cq_ipps_today(tabs: list) -> set:
         WHERE DATE(a.start_scheduled_period) = CURDATE()
           AND LOWER(COALESCE(a.status, '')) NOT IN ('cancelled', 'canceled', 'deleted', 'noshow')
         """,
-        # B — sans notes
         """
         SELECT
             COALESCE(p.ipp, CAST(p.id AS CHAR)) AS ipp,
@@ -622,7 +675,6 @@ def _fetch_timeplanner_cq_ipps_today(tabs: list) -> set:
         WHERE DATE(a.start_scheduled_period) = CURDATE()
           AND LOWER(COALESCE(a.status, '')) NOT IN ('cancelled', 'canceled', 'deleted', 'noshow')
         """,
-        # C — minimal (service_type seul)
         """
         SELECT
             COALESCE(p.ipp, CAST(p.id AS CHAR)) AS ipp,
@@ -635,46 +687,23 @@ def _fetch_timeplanner_cq_ipps_today(tabs: list) -> set:
         WHERE DATE(a.start_scheduled_period) = CURDATE()
           AND LOWER(COALESCE(a.status, '')) NOT IN ('cancelled', 'canceled', 'deleted', 'noshow')
         """,
-        # D — parfois les activités machine sont dans scheduled_activities
-        """
-        SELECT
-            COALESCE(p.ipp, CAST(p.id AS CHAR)) AS ipp,
-            COALESCE(sa.activity_name, sa.name, sa.service_type, '') AS service_type,
-            COALESCE(sa.status, '')             AS status,
-            COALESCE(sa.notes, '')              AS notes,
-            COALESCE(sa.resource_name, sa.machine_name, '') AS resource_name
-        FROM scheduled_activities sa
-        JOIN patients p ON sa.patient_id = p.id
-        WHERE DATE(sa.start_scheduled_period) = CURDATE()
-           OR DATE(sa.scheduled_start) = CURDATE()
-           OR DATE(sa.start_time) = CURDATE()
-        """,
     ]
 
     rows = []
     conn = cursor = None
     try:
         conn, cursor = get_mysql_connection(cfg)
-        last_err = None
         for q in queries:
             try:
                 cursor.execute(q)
                 rows = cursor.fetchall() or []
-                last_err = None
                 break
-            except Exception as e:
-                last_err = e
+            except Exception:
                 rows = []
                 continue
-        if last_err and not rows:
-            print(f"[ARIA MySQL] Timeplanner: aucune requête compatible ({last_err})")
-            return ipps
     except Exception as e:
         print(f"[ARIA MySQL] Timeplanner connect: {e}")
         return ipps
-    finally:
-        # on ferme après traitement ci-dessous si conn ok — handled in try block end
-        pass
 
     try:
         for r in rows:
@@ -686,12 +715,9 @@ def _fetch_timeplanner_cq_ipps_today(tabs: list) -> set:
             if not _is_cq_patient_activity(blob):
                 continue
 
-            # Si une ressource machine est renseignée, on tente de la rattacher
-            # aux mots-clés d'onglets Admin. Si resource vide → on accepte.
             if resource and tabs:
                 matched_tab = find_tab_for_focus(resource, tabs)
                 if matched_tab is None:
-                    # resource connue mais hors onglets configurés → ignore
                     continue
 
             ipp = _clean_ipp(str(r.get("ipp") or "").strip())
@@ -940,7 +966,7 @@ def build_dashboard_data(tab_name=None) -> dict:
     tabs = CQTab.query.order_by(CQTab.display_order).all()
     machines = CQMachine.query.order_by(CQMachine.display_order).all()
 
-    # IPP ayant un CQ Patient programmé AUJOURD'HUI sur une machine (Timeplanner)
+    # Programme du jour (Timeplanner)
     timeplanner_ipps = _fetch_timeplanner_cq_ipps_today(tabs)
 
     configured_extensions = get_configured_extensions(tab_name if tab_name else None)
@@ -966,7 +992,7 @@ def build_dashboard_data(tab_name=None) -> dict:
         status = str(row.get("status") or "ready")
         localisation = row.get("localisation") or "Non spécifié"
         comment = row.get("comment") or ""
-        scheduled = row.get("scheduled_start")  # = date MET uniquement
+        scheduled = row.get("scheduled_start")  # = date MET
 
         if not _is_cq_ready_task(display_focus, status):
             continue
@@ -995,8 +1021,7 @@ def build_dashboard_data(tab_name=None) -> dict:
         folder_name = _folder_from_scans(scans, fallback="") if scans else "-"
 
         # ---------------------------------------------------------------
-        # TIMEPLANNER = CQ programmé AUJOURD'HUI sur la machine
-        # (indépendant de la date MET)
+        # TIMEPLANNER = CQ programmé AUJOURD'HUI
         # ---------------------------------------------------------------
         ipp_clean = _clean_ipp(ipp)
         is_on_timeplanner = ipp_clean in timeplanner_ipps
