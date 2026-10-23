@@ -245,7 +245,7 @@
             <td class="p-2 capitalize">${r.first_name || r.prenom || ''}</td>
             <td class="p-2 font-semibold text-indigo-700 dark:text-indigo-400">${r.localisation || ''}</td>
             ${extCells}
-            <td class="p-2 text-[10px] text-slate-500 font-mono tracking-tighter truncate max-w-[120px]" title="${r.folder || ''}">${r.folder || ''}</td>
+            <td class="p-2 text-[10px] text-slate-500 dark:text-slate-400 font-mono tracking-tighter truncate max-w-[120px]" title="${r.folder && r.folder !== '-' ? r.folder : ''}">${r.folder || '-'}</td>
             <td class="p-2 font-mono font-medium">${r.met_date || r.met || ''}</td>
             <td class="p-2 font-semibold text-amber-600 dark:text-amber-400">${r.energy || r.energie || ''}</td>
             <td class="p-2 text-slate-600 dark:text-slate-400 text-[11px] max-w-[220px]"

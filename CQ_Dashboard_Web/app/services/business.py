@@ -722,7 +722,7 @@ def build_dashboard_data(tab_name=None) -> dict:
         tab_exts = get_configured_extensions(matched_tab.label)
         exts_for_row = configured_extensions or tab_exts
         ext_status = _ext_status_for_scans(scans, exts_for_row)
-        folder_name = _folder_from_scans(scans, fallback=matched_tab.label)
+        folder_name = _folder_from_scans(scans, fallback="") if scans else ""
 
         timeplanner_icon = (
             '<i class="fa-solid fa-calendar-check text-emerald-500 text-base" title="Rendez-vous planifié"></i>'
