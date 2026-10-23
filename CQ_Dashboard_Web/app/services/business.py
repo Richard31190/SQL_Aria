@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 CQ Dashboard — Logique Métier Précise & Filtrée
+- Traversal d'arborescence : IPP détecté dans le dossier parent (ex: Nompatient_IPP/Calcul/xxx.dcm)
 - Tri par priorité (Date MET)
 - Calcul jours ouvrés (Urgence de la tâche)
 - Code couleur de criticité dynamique
@@ -35,7 +36,7 @@ GLOBAL_KEYS = [
     "SCAN_DEPTH",
     "SCANDIDOS_SIGNATURE",
     "YEAR_OVERLAP_DAYS",
-    "URGENCY_DAYS",  # <-- Nouveau paramètre
+    "URGENCY_DAYS",
 ]
 
 
@@ -63,10 +64,6 @@ def _clean_ipp(ipp_str: str) -> str:
 
 
 def match_tab_keyword(keyword: str, text: str) -> bool:
-    """
-    Vérifie si 'keyword' est présent dans 'text'.
-    Si keyword fait 3 lettres ou moins (ex: 'ra', 'stec'), exige un mot entier.
-    """
     if not keyword or not text:
         return False
 
@@ -91,7 +88,7 @@ def get_global_settings() -> dict:
         'SCAN_DEPTH': '3',
         'SCANDIDOS_SIGNATURE': '114358',
         'YEAR_OVERLAP_DAYS': '15',
-        'URGENCY_DAYS': '1',  # 1 jour ouvré par défaut pour l'alerte orange
+        'URGENCY_DAYS': '1',
         'MYSQL_HOST': 'localhost',
         'MYSQL_PORT': '3306',
         'MYSQL_USER': 'root',
@@ -147,13 +144,38 @@ def get_mysql_connection(cfg: dict = None):
 
 
 def extract_ipp_candidates(text: str) -> list:
+    """Extrait les numéros de 5 chiffres ou plus."""
     if not text:
         return []
     return list(set(re.findall(r"\b\d{5,}\b", str(text))))
 
 
+def find_patient_folder_info(dirpath: str, root_path: str):
+    """
+    Inspecte les dossiers parents depuis root_path jusqu'à dirpath.
+    Retourne (nom_dossier_patient, list_des_ipps) dès qu'un dossier contient un IPP.
+    """
+    try:
+        rel = os.path.relpath(dirpath, root_path)
+    except Exception:
+        rel = dirpath
+
+    if rel == ".":
+        parts = []
+    else:
+        parts = rel.split(os.sep)
+
+    for part in parts:
+        ipps = extract_ipp_candidates(part)
+        if ipps:
+            clean_ipps = list(set(_clean_ipp(i) for i in ipps if _clean_ipp(i)))
+            if clean_ipps:
+                return part, clean_ipps
+
+    return None, []
+
+
 def find_tab_for_focus(focus_text: str, tabs: list):
-    """Associe une tâche/workflow à un onglet selon les mots-clés ARIA de l'onglet."""
     if not focus_text:
         return None
     for tab in tabs:
@@ -165,12 +187,6 @@ def find_tab_for_focus(focus_text: str, tabs: list):
 
 
 def find_technique_rules(task_text: str, machines: list) -> dict:
-    """
-    Retourne :
-      - technique_full  : libellé ARIA complet (pour l'affichage)
-      - technique_name  : nom de technique Admin matché (pour les durées)
-      - mount_unmount / acquisition
-    """
     full_text = (task_text or "").strip()
     norm_task = normalize(full_text)
 
@@ -179,7 +195,7 @@ def find_technique_rules(task_text: str, machines: list) -> dict:
         if kw and kw in norm_task:
             return {
                 "technique_full": full_text or m.name,
-                "technique_name": m.name,  # nom court Admin → regroupement montages
+                "technique_name": m.name,
                 "mount_unmount": int(m.get_mount_unmount() or 0),
                 "acquisition": int(m.get_acquisition() or 15),
             }
@@ -193,7 +209,6 @@ def find_technique_rules(task_text: str, machines: list) -> dict:
 
 
 def get_configured_extensions(tab_label=None) -> list:
-    """Retourne la liste unique des extensions définies en Admin (.dcm, .pdf...)."""
     tabs = CQTab.query.order_by(CQTab.display_order).all()
     ordered = []
     seen = set()
@@ -218,11 +233,11 @@ def get_configured_extensions(tab_label=None) -> list:
 
 
 def _icon_ok():
-    return '<i class="fa-solid fa-circle-check text-emerald-500 text-lg"></i>'
+    return '<i class="fa-solid fa-circle-check text-emerald-500 text-sm"></i>'
 
 
 def _icon_no():
-    return '<span class="text-slate-400 text-sm">-</span>'
+    return '<span class="text-slate-400 font-normal">-</span>'
 
 
 def _fmt_dt(value):
@@ -242,9 +257,6 @@ def _fmt_dt_short(value):
 
 
 def _scans_for_patient(ipp: str) -> list:
-    """
-    Recherche souple : teste l'IPP brut (ex: '00012345') ET l'IPP nettoyé (ex: '12345').
-    """
     if not ipp:
         return []
     raw_ipp = str(ipp).strip()
@@ -259,7 +271,7 @@ def _ext_status_for_scans(scans, configured_extensions: list) -> dict:
     found = {(s.file_type or "").lower() for s in scans}
     status = {}
     for ext in configured_extensions:
-        status[ext] = _icon_ok() if ext in found else _icon_no()
+        status[ext] = True if ext in found else False
     return status
 
 
@@ -273,32 +285,28 @@ def _folder_from_scans(scans, fallback: str = "") -> str:
                     return data["folder"]
             except Exception:
                 pass
-    return fallback or ""
+    return fallback or "-"
 
 
 def business_days_between(d1: datetime, d2: datetime) -> int:
-    """
-    Calcule le nombre de jours ouvrés (Lundi au Vendredi) entre deux dates.
-    """
     if not d1 or not d2:
         return 0
-    days = 0
     current = d1.date()
     end = d2.date()
 
     if current > end:
         return -business_days_between(d2, d1)
 
+    days = 0
     while current < end:
-        # 0 = Lundi, 1 = Mardi, ..., 4 = Vendredi
-        if current.weekday() < 5:
+        if current.weekday() < 5:  # Lundi-Vendredi
             days += 1
         current += timedelta(days=1)
     return days
 
 
 # ===========================================================================
-# Scan Réseau IUCT 
+# Scan Réseau IUCT (Détection IPP dans l'Arborescence du Dossier Patient)
 # ===========================================================================
 
 def perform_network_scan() -> int:
@@ -363,8 +371,6 @@ def perform_network_scan() -> int:
             if not os.path.isdir(base_path):
                 continue
 
-            folder_basename = os.path.basename(os.path.normpath(base_path))
-
             root_paths_to_scan = []
             if grouped_by_year:
                 for y in sorted(allowed_years):
@@ -384,26 +390,44 @@ def perform_network_scan() -> int:
                         dirnames[:] = []
                         continue
 
-                    dir_name = os.path.basename(dirpath)
-                    ipp_candidates = extract_ipp_candidates(dir_name)
-                    if not ipp_candidates:
-                        continue
+                    # 1) Cherche si un dossier parent (ou le dossier actuel) contient un IPP
+                    folder_name, path_ipps = find_patient_folder_info(dirpath, root_path)
 
-                    for raw_ipp in ipp_candidates:
-                        clean_ipp = _clean_ipp(raw_ipp)
-                        for fname in filenames:
-                            f_ext = os.path.splitext(fname)[1].lower()
-                            if f_ext not in valid_exts:
-                                continue
-                            full_file_path = os.path.join(dirpath, fname)
+                    for fname in filenames:
+                        f_ext = os.path.splitext(fname)[1].lower()
+                        if f_ext not in valid_exts:
+                            continue
+
+                        # IPPs applicables : ceux de la structure de dossiers, sinon fallback sur le nom de fichier
+                        target_ipps = path_ipps
+                        target_folder = folder_name
+
+                        if not target_ipps:
+                            file_ipps = [
+                                _clean_ipp(i) for i in extract_ipp_candidates(fname) if _clean_ipp(i)
+                            ]
+                            if file_ipps:
+                                target_ipps = file_ipps
+                                target_folder = os.path.basename(dirpath)
+
+                        if not target_ipps:
+                            continue
+
+                        full_file_path = os.path.join(dirpath, fname)
+
+                        for clean_ipp in target_ipps:
                             key = (clean_ipp, full_file_path)
                             if key in seen_keys:
                                 continue
                             seen_keys.add(key)
 
+                            # Nom affiché = dernier dossier du chemin Admin (ex: Patients_stereo_EC_IUC)
+                            display_root = os.path.basename(os.path.normpath(base_path))
+
                             extra_data = json.dumps({
-                                "folder": folder_basename,
+                                "folder": display_root,
                                 "base_path": base_path,
+                                "patient_folder": target_folder or "",  # optionnel, pour debug
                                 "tab_id": tab.id
                             })
 
@@ -428,7 +452,7 @@ def perform_network_scan() -> int:
 
 
 # ===========================================================================
-# Détection CQ Réalisation
+# ARIA Queries & Traitements
 # ===========================================================================
 
 def _is_cq_ready_task(display_focus: str, status: str) -> bool:
@@ -504,10 +528,6 @@ def _fetch_aria_activity_rows(lookback_days: int) -> list:
 
     return []
 
-
-# ===========================================================================
-# Préparation (Validation Médicale Dosimétrie + Finalisation Draft)
-# ===========================================================================
 
 def _is_validation_medicale_dosi(display_focus: str) -> bool:
     n = normalize(display_focus or "")
@@ -620,7 +640,6 @@ def _fetch_imminent_prep_rows(lookback_days: int, tabs: list) -> list:
             tdm_date = max(tdm_dates) if tdm_dates else None
 
             app_tasks = sorted([t for t in c_tasks if _is_appel_patient(t.get("display_focus") or "")], key=lambda x: x.get("last_updated") or datetime.min, reverse=True)
-            dosi_task = next((t.get("display_focus") for t in c_tasks if _is_realisation_dosi(t.get("display_focus") or "")), None)
 
             p_mets = mets_by_patient.get(meta.get("patient_db_id"), [])
             met_candidates = [m.get("start_scheduled_period") for m in p_mets if m.get("start_scheduled_period") and val_date and m.get("start_scheduled_period") > val_date]
@@ -655,13 +674,10 @@ def _fetch_imminent_prep_rows(lookback_days: int, tabs: list) -> list:
 
 
 # ===========================================================================
-# Point d'entrée Dashboard (Avec Tri par Date et Code Couleur)
+# Point d'entrée Dashboard
 # ===========================================================================
 
 def build_dashboard_data(tab_name=None) -> dict:
-    """
-    Point d'entrée principal /api/data.
-    """
     settings = get_global_settings()
     try:
         lookback_days = int(settings.get("LOOKBACK_DAYS", 14) or 14)
@@ -678,7 +694,6 @@ def build_dashboard_data(tab_name=None) -> dict:
 
     configured_extensions = get_configured_extensions(tab_name if tab_name else None)
     
-    # Auto-scan au premier chargement si la table ScanCache est encore vide
     if ScanCache.query.count() == 0:
         perform_network_scan()
 
@@ -722,7 +737,8 @@ def build_dashboard_data(tab_name=None) -> dict:
         tab_exts = get_configured_extensions(matched_tab.label)
         exts_for_row = configured_extensions or tab_exts
         ext_status = _ext_status_for_scans(scans, exts_for_row)
-        folder_name = _folder_from_scans(scans, fallback="") if scans else ""
+        
+        folder_name = _folder_from_scans(scans, fallback="") if scans else "-"
 
         timeplanner_icon = (
             '<i class="fa-solid fa-calendar-check text-emerald-500 text-base" title="Rendez-vous planifié"></i>'
@@ -730,10 +746,7 @@ def build_dashboard_data(tab_name=None) -> dict:
             else '<span class="text-slate-400" title="Aucun créneau planifié">—</span>'
         )
 
-        # ---------------------------------------------------------
-        # CALCUL DU CODE COULEUR D'URGENCE (Jours Ouvrés) ET DU TRI
-        # ---------------------------------------------------------
-        sort_val = datetime.max  # Par défaut, mis tout en bas si pas de date
+        sort_val = datetime.max
         raw_met_date_str = None
         met_color = "bg-slate-50 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700"
 
@@ -741,19 +754,14 @@ def build_dashboard_data(tab_name=None) -> dict:
             sort_val = scheduled
             raw_met_date_str = scheduled.isoformat()
             
-            # Calcul des jours ouvrés de différence
             bdays = business_days_between(now, scheduled)
 
-            # Passé ou Aujourd'hui -> ROUGE
             if bdays < 0 or (bdays == 0 and scheduled.date() <= now.date()):
                 met_color = "bg-red-50 text-red-900 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-900"
-            # Urgent (selon le seuil d'administration, ex: 1 jour ouvré) -> ORANGE
             elif bdays <= urgency_days:
                 met_color = "bg-orange-50 text-orange-900 border-orange-200 dark:bg-orange-900/30 dark:text-orange-300 dark:border-orange-900"
-            # Plus tard -> VERT
             else:
                 met_color = "bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-900/10 dark:text-emerald-300 dark:border-emerald-900"
-        # ---------------------------------------------------------
 
         row_unique_key = f"{ipp}_{task_id}"
         main_by_key[row_unique_key] = {
@@ -763,13 +771,11 @@ def build_dashboard_data(tab_name=None) -> dict:
             "first_name": first_name,
             "localisation": localisation if localisation else "Non spécifié",
             "ext_status": ext_status,
-            "dcm": ext_status.get(".dcm", _icon_no()),
-            "pdf": ext_status.get(".pdf", _icon_no()),
-            "folder": folder_name or "—",
+            "folder": folder_name,
             "met_date": _fmt_dt(scheduled),
             "met_color": met_color,
-            "raw_met_date": raw_met_date_str, # Utile pour le calendrier Javascript
-            "_sort_val": sort_val,            # Utilisé pour le tri
+            "raw_met_date": raw_met_date_str,
+            "_sort_val": sort_val,
             "energy": default_energy or "—",
             "technique": rules.get("technique_full") or rules.get("technique_name") or "",
             "tech_name": rules.get("technique_name") or "",
@@ -781,12 +787,7 @@ def build_dashboard_data(tab_name=None) -> dict:
             "tab_label": matched_tab.label,
         }
 
-    # ---------------------------------------------------------
-    # TRI DES PATIENTS PAR ORDRE D'URGENCE DE LA MET
-    # ---------------------------------------------------------
     sorted_main_rows = sorted(list(main_by_key.values()), key=lambda x: x["_sort_val"])
-    
-    # Nettoyage de la clé de tri temporaire
     for r in sorted_main_rows:
         r.pop("_sort_val", None)
 
