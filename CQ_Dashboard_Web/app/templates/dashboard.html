@@ -217,7 +217,6 @@
                 extCells += `<td class="p-2 text-center text-sm">${cell}</td>`;
             });
 
-            // Clef unique par tâche (IPP + task_id) pour éviter l'écrasement en cas de multi-CQ
             const patientId = r.patient_id || r.ipp || '';
             const taskId = r.task_id || r.cq_task_id || '';
             const rowKey = `${patientId}_${taskId}`;
@@ -225,30 +224,38 @@
             const isChecked = !uncheckedRows.has(rowKey);
             if (!isChecked) allChecked = false;
 
+            // Affichage = libellé complet | Calcul montage = nom Admin court
+            const techniqueLabel = r.technique || r.tech_name || '';
+            const techniqueKey = r.tech_name || r.technique || '';
+            const safeTitle = String(techniqueLabel).replace(/"/g, '&quot;');
+
             const tr = document.createElement('tr');
             tr.className = `${r.met_color || ''} hover:brightness-95 transition-all`;
             tr.innerHTML = `
-                <td class="p-2 text-center">
-                    <input type="checkbox" class="row-checkbox rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer"
-                           data-key="${rowKey}"
-                           ${isChecked ? 'checked' : ''}
-                           data-acq="${r.base_duration ?? r.acq_minutes ?? 0}"
-                           data-mount="${r.mount_duration ?? r.mount_minutes ?? 0}"
-                           data-tech="${r.technique || r.tech_name || ''}">
-                </td>
-                <td class="p-2 font-mono text-slate-900 dark:text-white font-bold">${patientId}</td>
-                <td class="p-2 uppercase font-semibold">${r.last_name || r.nom || ''}</td>
-                <td class="p-2 capitalize">${r.first_name || r.prenom || ''}</td>
-                <td class="p-2 font-semibold text-indigo-700 dark:text-indigo-400">${r.localisation || ''}</td>
-                ${extCells}
-                <td class="p-2 text-[10px] text-slate-500 font-mono tracking-tighter truncate max-w-[120px]" title="${r.folder || ''}">${r.folder || ''}</td>
-                <td class="p-2 font-mono font-medium">${r.met_date || r.met || ''}</td>
-                <td class="p-2 font-semibold text-amber-600 dark:text-amber-400">${r.energy || r.energie || ''}</td>
-                <td class="p-2 text-slate-600 dark:text-slate-400 text-[11px]" title="Acquisition: ${r.base_duration ?? ''}m | Montage: ${r.mount_duration ?? ''}m">${r.technique || r.tech_name || ''}</td>
-                <td class="p-2 text-center text-base">${r.timeplanner || ''}</td>
-                <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-slate-700/60">${r.status || r.statut || ''}</span></td>
-                <td class="p-2 text-slate-500 italic text-[11px]">${r.comment || r.commentaire || ''}</td>
-            `;
+            <td class="p-2 text-center">
+                <input type="checkbox" class="row-checkbox rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer"
+                       data-key="${rowKey}"
+                       ${isChecked ? 'checked' : ''}
+                       data-acq="${r.base_duration ?? r.acq_minutes ?? 0}"
+                       data-mount="${r.mount_duration ?? r.mount_minutes ?? 0}"
+                       data-tech="${techniqueKey.replace(/"/g, '&quot;')}">
+            </td>
+            <td class="p-2 font-mono text-slate-900 dark:text-white font-bold">${patientId}</td>
+            <td class="p-2 uppercase font-semibold">${r.last_name || r.nom || ''}</td>
+            <td class="p-2 capitalize">${r.first_name || r.prenom || ''}</td>
+            <td class="p-2 font-semibold text-indigo-700 dark:text-indigo-400">${r.localisation || ''}</td>
+            ${extCells}
+            <td class="p-2 text-[10px] text-slate-500 font-mono tracking-tighter truncate max-w-[120px]" title="${r.folder || ''}">${r.folder || ''}</td>
+            <td class="p-2 font-mono font-medium">${r.met_date || r.met || ''}</td>
+            <td class="p-2 font-semibold text-amber-600 dark:text-amber-400">${r.energy || r.energie || ''}</td>
+            <td class="p-2 text-slate-600 dark:text-slate-400 text-[11px] max-w-[220px]"
+                title="Acquisition: ${r.base_duration ?? ''} min | Montage: ${r.mount_duration ?? ''} min">
+                <span class="block truncate" title="${safeTitle}">${techniqueLabel}</span>
+            </td>
+            <td class="p-2 text-center text-base">${r.timeplanner || ''}</td>
+            <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-slate-700/60">${r.status || r.statut || ''}</span></td>
+            <td class="p-2 text-slate-500 italic text-[11px]">${r.comment || r.commentaire || ''}</td>
+        `;
             tbody.appendChild(tr);
         });
 

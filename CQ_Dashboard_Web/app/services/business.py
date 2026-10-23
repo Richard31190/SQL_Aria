@@ -165,17 +165,28 @@ def find_tab_for_focus(focus_text: str, tabs: list):
 
 
 def find_technique_rules(task_text: str, machines: list) -> dict:
-    norm_task = normalize(task_text)
+    """
+    Retourne :
+      - technique_full  : libellé ARIA complet (pour l'affichage)
+      - technique_name  : nom de technique Admin matché (pour les durées)
+      - mount_unmount / acquisition
+    """
+    full_text = (task_text or "").strip()
+    norm_task = normalize(full_text)
+
     for m in machines:
         kw = normalize(m.name)
         if kw and kw in norm_task:
             return {
-                "technique_name": m.name,
+                "technique_full": full_text or m.name,
+                "technique_name": m.name,  # nom court Admin → regroupement montages
                 "mount_unmount": int(m.get_mount_unmount() or 0),
                 "acquisition": int(m.get_acquisition() or 15),
             }
+
     return {
-        "technique_name": (task_text or "CQ Standard")[:80],
+        "technique_full": full_text or "CQ Standard",
+        "technique_name": full_text or "CQ Standard",
         "mount_unmount": 10,
         "acquisition": 15,
     }
@@ -760,8 +771,8 @@ def build_dashboard_data(tab_name=None) -> dict:
             "raw_met_date": raw_met_date_str, # Utile pour le calendrier Javascript
             "_sort_val": sort_val,            # Utilisé pour le tri
             "energy": default_energy or "—",
-            "technique": rules["technique_name"],
-            "tech_name": rules["technique_name"],
+            "technique": rules.get("technique_full") or rules.get("technique_name") or "",
+            "tech_name": rules.get("technique_name") or "",
             "base_duration": rules["acquisition"],
             "mount_duration": rules["mount_unmount"],
             "timeplanner": timeplanner_icon,
