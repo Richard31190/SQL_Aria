@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 CQ Dashboard — Logique Métier Précise & Filtrée
-- CQ Réalisation : logique validée (inchangée)
-- Préparation : logique alignée sur l'ancien load_cq_imminent_patients_fast
-  (Validation médicale dosimétrie + Finalisation dossier en draft)
+- Tri par priorité (Date MET)
+- Calcul jours ouvrés (Urgence de la tâche)
+- Code couleur de criticité dynamique
 """
 import os
 import re
@@ -35,6 +35,7 @@ GLOBAL_KEYS = [
     "SCAN_DEPTH",
     "SCANDIDOS_SIGNATURE",
     "YEAR_OVERLAP_DAYS",
+    "URGENCY_DAYS",  # <-- Nouveau paramètre
 ]
 
 
@@ -53,11 +54,18 @@ def normalize(text: str) -> str:
     return text
 
 
+def _clean_ipp(ipp_str: str) -> str:
+    """Supprime les zéros inutiles en-tête (ex: '00012345' -> '12345')."""
+    if not ipp_str:
+        return ""
+    cleaned = str(ipp_str).strip().lstrip("0")
+    return cleaned if cleaned else "0"
+
+
 def match_tab_keyword(keyword: str, text: str) -> bool:
     """
     Vérifie si 'keyword' est présent dans 'text'.
-    Si keyword fait 3 lettres ou moins (ex: 'ra', 'stec'), exige un mot entier
-    pour éviter que 'ra' ne matche 'radiothérapie'.
+    Si keyword fait 3 lettres ou moins (ex: 'ra', 'stec'), exige un mot entier.
     """
     if not keyword or not text:
         return False
@@ -83,6 +91,7 @@ def get_global_settings() -> dict:
         'SCAN_DEPTH': '3',
         'SCANDIDOS_SIGNATURE': '114358',
         'YEAR_OVERLAP_DAYS': '15',
+        'URGENCY_DAYS': '1',  # 1 jour ouvré par défaut pour l'alerte orange
         'MYSQL_HOST': 'localhost',
         'MYSQL_PORT': '3306',
         'MYSQL_USER': 'root',
@@ -198,30 +207,11 @@ def get_configured_extensions(tab_label=None) -> list:
 
 
 def _icon_ok():
-    return '<i class="fa-solid fa-circle-check text-emerald-500"></i>'
+    return '<i class="fa-solid fa-circle-check text-emerald-500 text-lg"></i>'
 
 
 def _icon_no():
-    return '<span class="text-slate-400">-</span>'
-
-
-def _met_color_class(met_dt):
-    if not met_dt or isinstance(met_dt, str):
-        return ""
-    try:
-        now = datetime.now()
-        if met_dt.tzinfo:
-            now = datetime.now(met_dt.tzinfo)
-        delta_h = (met_dt - now).total_seconds() / 3600.0
-        if delta_h < 0:
-            return "bg-slate-100 dark:bg-slate-900/40"
-        if delta_h <= 24:
-            return "bg-amber-50 dark:bg-amber-950/30"
-        if delta_h <= 72:
-            return "bg-cyan-50 dark:bg-cyan-950/20"
-    except Exception:
-        pass
-    return ""
+    return '<span class="text-slate-400 text-sm">-</span>'
 
 
 def _fmt_dt(value):
@@ -241,7 +231,17 @@ def _fmt_dt_short(value):
 
 
 def _scans_for_patient(ipp: str) -> list:
-    return ScanCache.query.filter_by(patient_id=str(ipp)).all()
+    """
+    Recherche souple : teste l'IPP brut (ex: '00012345') ET l'IPP nettoyé (ex: '12345').
+    """
+    if not ipp:
+        return []
+    raw_ipp = str(ipp).strip()
+    clean_ipp = _clean_ipp(raw_ipp)
+
+    return ScanCache.query.filter(
+        (ScanCache.patient_id == raw_ipp) | (ScanCache.patient_id == clean_ipp)
+    ).all()
 
 
 def _ext_status_for_scans(scans, configured_extensions: list) -> dict:
@@ -265,8 +265,29 @@ def _folder_from_scans(scans, fallback: str = "") -> str:
     return fallback or ""
 
 
+def business_days_between(d1: datetime, d2: datetime) -> int:
+    """
+    Calcule le nombre de jours ouvrés (Lundi au Vendredi) entre deux dates.
+    """
+    if not d1 or not d2:
+        return 0
+    days = 0
+    current = d1.date()
+    end = d2.date()
+
+    if current > end:
+        return -business_days_between(d2, d1)
+
+    while current < end:
+        # 0 = Lundi, 1 = Mardi, ..., 4 = Vendredi
+        if current.weekday() < 5:
+            days += 1
+        current += timedelta(days=1)
+    return days
+
+
 # ===========================================================================
-# Scan Réseau IUCT (100% Admin Driven)
+# Scan Réseau IUCT 
 # ===========================================================================
 
 def perform_network_scan() -> int:
@@ -329,7 +350,6 @@ def perform_network_scan() -> int:
 
         for base_path in network_paths:
             if not os.path.isdir(base_path):
-                print(f"[SCAN] Chemin inaccessible: {base_path}")
                 continue
 
             folder_basename = os.path.basename(os.path.normpath(base_path))
@@ -346,7 +366,6 @@ def perform_network_scan() -> int:
                 root_paths_to_scan.append(base_path)
 
             for root_path in root_paths_to_scan:
-                print(f"[SCAN] Ingestion de {root_path} (Depth={scan_depth})")
                 for dirpath, dirnames, filenames in os.walk(root_path):
                     rel = os.path.relpath(dirpath, root_path)
                     depth = 0 if rel == "." else len(rel.split(os.sep))
@@ -359,13 +378,14 @@ def perform_network_scan() -> int:
                     if not ipp_candidates:
                         continue
 
-                    for ipp in ipp_candidates:
+                    for raw_ipp in ipp_candidates:
+                        clean_ipp = _clean_ipp(raw_ipp)
                         for fname in filenames:
                             f_ext = os.path.splitext(fname)[1].lower()
                             if f_ext not in valid_exts:
                                 continue
                             full_file_path = os.path.join(dirpath, fname)
-                            key = (str(ipp), full_file_path)
+                            key = (clean_ipp, full_file_path)
                             if key in seen_keys:
                                 continue
                             seen_keys.add(key)
@@ -377,7 +397,7 @@ def perform_network_scan() -> int:
                             })
 
                             sc = ScanCache(
-                                patient_id=str(ipp),
+                                patient_id=clean_ipp,
                                 file_type=f_ext,
                                 file_name=fname,
                                 file_path=full_file_path,
@@ -397,23 +417,17 @@ def perform_network_scan() -> int:
 
 
 # ===========================================================================
-# Détection CQ Réalisation (INCHANGÉE — liste validée)
+# Détection CQ Réalisation
 # ===========================================================================
 
 def _is_cq_ready_task(display_focus: str, status: str) -> bool:
-    """
-    Vérifie qu'il s'agit bien d'une tâche de Réalisation de CQ ou Replanification.
-    LOGIQUE VALIDÉE — NE PAS MODIFIER.
-    """
     norm_f = normalize(display_focus)
     norm_s = normalize(status)
 
     if norm_s not in ('ready', 'inprogress', 'in-progress', 'booked', 'arrived'):
         return False
-
     if ("realisation" in norm_f and "cq" in norm_f) or ("replanif" in norm_f):
         return True
-
     if "cq" in norm_f and any(k in norm_f for k in ("patient", "ruby", "octa", "tomo", "hyperarc")):
         return True
 
@@ -421,9 +435,6 @@ def _is_cq_ready_task(display_focus: str, status: str) -> bool:
 
 
 def _fetch_aria_activity_rows(lookback_days: int) -> list:
-    """
-    Requête MySQL pour le tableau principal CQ (réalisation).
-    """
     query = """
         SELECT 
             t.id                                            AS task_id,
@@ -467,23 +478,16 @@ def _fetch_aria_activity_rows(lookback_days: int) -> list:
     """
 
     cfg = get_aria_mysql_config()
-
     try:
         conn, cursor = get_mysql_connection(cfg)
         try:
             cursor.execute(query, (lookback_days, lookback_days))
-            rows = cursor.fetchall() or []
-            print(f"[ARIA MySQL] CQ brut : {len(rows)} tâches analysées.")
-            return rows
+            return cursor.fetchall() or []
         finally:
-            try:
-                cursor.close()
-            except Exception:
-                pass
-            try:
-                conn.close()
-            except Exception:
-                pass
+            try: cursor.close()
+            except Exception: pass
+            try: conn.close()
+            except Exception: pass
     except Exception as e:
         print(f"[ARIA MySQL] Erreur CQ : {e}")
 
@@ -491,73 +495,42 @@ def _fetch_aria_activity_rows(lookback_days: int) -> list:
 
 
 # ===========================================================================
-# Préparation = ancien load_cq_imminent_patients_fast
+# Préparation (Validation Médicale Dosimétrie + Finalisation Draft)
 # ===========================================================================
 
 def _is_validation_medicale_dosi(display_focus: str) -> bool:
-    """display_focus ilike 'validation médicale de la dosimétrie%'"""
     n = normalize(display_focus or "")
     return n.startswith("validationmedicaledeladosimetrie") or n.startswith("validationmedicaledosimetrie")
 
-
 def _is_finalisation_dossier(display_focus: str) -> bool:
-    """display_focus ilike 'finalisation du dossier%'"""
     n = normalize(display_focus or "")
     return n.startswith("finalisationdudossier") or n.startswith("finalisationdossier")
 
-
 def _is_scanner_tdm(display_focus: str) -> bool:
-    """display_focus ilike 'scanner%'"""
-    n = normalize(display_focus or "")
-    return n.startswith("scanner")
-
+    return normalize(display_focus or "").startswith("scanner")
 
 def _is_appel_patient(display_focus: str) -> bool:
     n = normalize(display_focus or "")
     return n.startswith("appelerpatient") or n.startswith("appelpatient")
 
-
 def _is_realisation_dosi(display_focus: str) -> bool:
-    n = normalize(display_focus or "")
-    return "realisationdosi" in n
-
+    return "realisationdosi" in normalize(display_focus or "")
 
 def _find_tab_for_workflow(workflow: str, tabs: list):
-    """
-    Ancien code :
-      tomo 2 / tomo 4 / tomo 7 / sinon Nova
-    Ici : match Admin sur careplan.title, fallback onglet 'Nova'.
-    """
     if not tabs:
         return None
-
     matched = find_tab_for_focus(workflow or "", tabs)
     if matched:
         return matched
-
-    # Fallback historique : non-Tomo → Nova
     for t in tabs:
         label_n = normalize(t.label or "")
         name_n = normalize(getattr(t, "name", "") or "")
         if "nova" in label_n or "nova" in name_n:
             return t
-
     return None
 
-
 def _fetch_imminent_prep_rows(lookback_days: int, tabs: list) -> list:
-    """
-    Reproduit load_cq_imminent_patients_fast de l'ancien programme :
-
-    1) Tâches 'Validation médicale de la dosimétrie' récentes
-       status ∈ completed | in-progress | ready
-    2) Sur le même careplan : 'Finalisation du dossier' encore en draft
-    3) Dates TDM (scanner), validation, MET (si MET > date validation)
-    4) Ventilation par careplan.title (Workflow) → onglet
-    """
     cfg = get_aria_mysql_config()
-
-    # --- A. Careplans candidats via validation médicale récente ---
     q_val = """
         SELECT
             t.id                 AS task_id,
@@ -576,7 +549,6 @@ def _fetch_imminent_prep_rows(lookback_days: int, tabs: list) -> list:
         WHERE t.last_updated >= NOW() - INTERVAL %s DAY
           AND LOWER(COALESCE(t.status, '')) IN ('completed', 'in-progress', 'inprogress', 'ready')
     """
-
     try:
         conn, cursor = get_mysql_connection(cfg)
     except Exception as e:
@@ -586,20 +558,15 @@ def _fetch_imminent_prep_rows(lookback_days: int, tabs: list) -> list:
     try:
         cursor.execute(q_val, (lookback_days,))
         raw_val = cursor.fetchall() or []
-
-        # Filtre Python exact sur le libellé (accents / variantes)
-        val_rows = []
         careplan_ids = set()
-        careplan_meta = {}  # cp_id -> info patient / workflow
+        careplan_meta = {}
 
         for r in raw_val:
-            focus = r.get("display_focus") or ""
-            if not _is_validation_medicale_dosi(focus):
+            if not _is_validation_medicale_dosi(r.get("display_focus") or ""):
                 continue
             cp_id = r.get("careplan_id")
             if not cp_id:
                 continue
-            val_rows.append(r)
             careplan_ids.add(cp_id)
             careplan_meta[cp_id] = {
                 "ipp": str(r.get("ipp") or "").strip(),
@@ -610,195 +577,105 @@ def _fetch_imminent_prep_rows(lookback_days: int, tabs: list) -> list:
             }
 
         if not careplan_ids:
-            print("[ARIA MySQL] Prep : aucune validation médicale dosimétrie récente.")
             return []
 
-        # --- B. TOUTES les tâches de ces careplans (finalisation, scanner, appel, dosi) ---
         placeholders = ",".join(["%s"] * len(careplan_ids))
-        cp_list = list(careplan_ids)
-
-        q_tasks = f"""
-            SELECT
-                careplan_id,
-                display_focus,
-                status,
-                last_updated
-            FROM tasks
-            WHERE careplan_id IN ({placeholders})
-        """
-        cursor.execute(q_tasks, cp_list)
-        all_tasks = cursor.fetchall() or []
-
+        q_tasks = f"SELECT careplan_id, display_focus, status, last_updated FROM tasks WHERE careplan_id IN ({placeholders})"
+        cursor.execute(q_tasks, list(careplan_ids))
         tasks_by_cp = defaultdict(list)
-        for t in all_tasks:
+        for t in (cursor.fetchall() or []):
             tasks_by_cp[t.get("careplan_id")].append(t)
 
-        # --- C. MET des patients concernés ---
         patient_db_ids = [m["patient_db_id"] for m in careplan_meta.values() if m.get("patient_db_id")]
         mets_by_patient = defaultdict(list)
-
         if patient_db_ids:
             ph2 = ",".join(["%s"] * len(patient_db_ids))
-            q_met = f"""
-                SELECT
-                    patient_id,
-                    start_scheduled_period,
-                    status
-                FROM appointments
-                WHERE patient_id IN ({ph2})
-                  AND LOWER(COALESCE(service_type, '')) LIKE 'met%%'
-                  AND LOWER(COALESCE(status, '')) NOT IN ('cancelled', 'canceled')
-            """
+            q_met = f"SELECT patient_id, start_scheduled_period, status FROM appointments WHERE patient_id IN ({ph2}) AND LOWER(COALESCE(service_type, '')) LIKE 'met%%' AND LOWER(COALESCE(status, '')) NOT IN ('cancelled', 'canceled')"
             cursor.execute(q_met, list(patient_db_ids))
             for m in (cursor.fetchall() or []):
                 mets_by_patient[m.get("patient_id")].append(m)
 
-        # --- D. Assemblage (même règles que l'ancien programme) ---
         prep_rows = []
-        seen_cp = set()
-
         for cp_id, meta in careplan_meta.items():
-            if cp_id in seen_cp:
-                continue
-
             c_tasks = tasks_by_cp.get(cp_id, [])
-
-            # validation médicale dans le lookback
-            v_tasks = []
-            for t in c_tasks:
-                if not _is_validation_medicale_dosi(t.get("display_focus") or ""):
-                    continue
-                st = str(t.get("status") or "").lower().strip()
-                if st not in ("completed", "in-progress", "inprogress", "ready"):
-                    continue
-                lu = t.get("last_updated")
-                v_tasks.append(t)
-
-            if not v_tasks:
+            v_tasks = [t for t in c_tasks if _is_validation_medicale_dosi(t.get("display_focus") or "") and str(t.get("status") or "").lower().strip() in ("completed", "in-progress", "inprogress", "ready")]
+            if not v_tasks: continue
+            val_date = max([t.get("last_updated") for t in v_tasks if t.get("last_updated")] or [None])
+            
+            if not any(_is_finalisation_dossier(t.get("display_focus") or "") and str(t.get("status") or "").lower().strip() == "draft" for t in c_tasks):
                 continue
 
-            val_dates = [t.get("last_updated") for t in v_tasks if t.get("last_updated")]
-            if not val_dates:
-                continue
-            val_date = max(val_dates)
-
-            # finalisation du dossier DOIT être en draft
-            has_finalisation_draft = any(
-                _is_finalisation_dossier(t.get("display_focus") or "")
-                and str(t.get("status") or "").lower().strip() == "draft"
-                for t in c_tasks
-            )
-            if not has_finalisation_draft:
-                continue
-
-            seen_cp.add(cp_id)
-
-            # TDM / scanner
-            tdm_dates = [
-                t.get("last_updated") for t in c_tasks
-                if _is_scanner_tdm(t.get("display_focus") or "") and t.get("last_updated")
-            ]
+            tdm_dates = [t.get("last_updated") for t in c_tasks if _is_scanner_tdm(t.get("display_focus") or "") and t.get("last_updated")]
             tdm_date = max(tdm_dates) if tdm_dates else None
 
-            # Appel patient
-            appel_tasks = [t for t in c_tasks if _is_appel_patient(t.get("display_focus") or "")]
-            appel_status = None
-            if appel_tasks:
-                appel_tasks_sorted = sorted(
-                    appel_tasks,
-                    key=lambda x: x.get("last_updated") or datetime.min,
-                    reverse=True
-                )
-                appel_status = appel_tasks_sorted[0].get("status")
+            app_tasks = sorted([t for t in c_tasks if _is_appel_patient(t.get("display_focus") or "")], key=lambda x: x.get("last_updated") or datetime.min, reverse=True)
+            dosi_task = next((t.get("display_focus") for t in c_tasks if _is_realisation_dosi(t.get("display_focus") or "")), None)
 
-            # Réalisation dosi (info)
-            dosi_task = next(
-                (t.get("display_focus") for t in c_tasks if _is_realisation_dosi(t.get("display_focus") or "")),
-                None
-            )
-
-            # MET strictement APRÈS la date de validation (comme l'ancien code)
-            p_db_id = meta.get("patient_db_id")
-            p_mets = mets_by_patient.get(p_db_id, [])
-            met_candidates = []
-            for m in p_mets:
-                start = m.get("start_scheduled_period")
-                if start and val_date and start > val_date:
-                    met_candidates.append(start)
+            p_mets = mets_by_patient.get(meta.get("patient_db_id"), [])
+            met_candidates = [m.get("start_scheduled_period") for m in p_mets if m.get("start_scheduled_period") and val_date and m.get("start_scheduled_period") > val_date]
             met_start = max(met_candidates) if met_candidates else None
-            va_tomber = bool(met_start)
 
-            workflow = meta.get("careplan_title") or ""
-            matched_tab = _find_tab_for_workflow(workflow, tabs)
-
-            ipp = meta.get("ipp") or ""
-            if not ipp:
-                continue
-
-            last_name = meta.get("last_name") or ""
-            first_name = meta.get("first_name") or ""
+            matched_tab = _find_tab_for_workflow(meta.get("careplan_title") or "", tabs)
+            if not meta.get("ipp"): continue
 
             prep_rows.append({
-                "patient_id": ipp,
-                "patient_name": f"{last_name} {first_name}".strip(),
-                "last_name": last_name,
-                "first_name": first_name,
-                "task_name": "Validation médicale de la dosimétrie",
-                "workflow": workflow,
+                "patient_id": meta.get("ipp"),
+                "patient_name": f"{meta.get('last_name')} {meta.get('first_name')}".strip(),
+                "task_name": "Validation médicale",
+                "workflow": meta.get("careplan_title") or "",
                 "due_date": _fmt_dt(met_start),
-                "status": appel_status or "ready",
+                "status": app_tasks[0].get("status") if app_tasks else "ready",
                 "tdm_date": _fmt_dt_short(tdm_date),
                 "validation_date": _fmt_dt_short(val_date),
                 "met_start": _fmt_dt(met_start),
-                "va_tomber": va_tomber,
-                "realisation_dosi_task": dosi_task or "",
+                "va_tomber": bool(met_start),
                 "tab_label": matched_tab.label if matched_tab else None,
             })
 
-        print(f"[ARIA MySQL] Prep imminent : {len(prep_rows)} patients (validation + finalisation draft).")
         return prep_rows
-
     except Exception as e:
         print(f"[ARIA MySQL] Erreur prep : {e}")
         return []
     finally:
-        try:
-            cursor.close()
-        except Exception:
-            pass
-        try:
-            conn.close()
-        except Exception:
-            pass
+        try: cursor.close()
+        except Exception: pass
+        try: conn.close()
+        except Exception: pass
 
 
 # ===========================================================================
-# Point d'entrée dashboard
+# Point d'entrée Dashboard (Avec Tri par Date et Code Couleur)
 # ===========================================================================
 
 def build_dashboard_data(tab_name=None) -> dict:
     """
-    /api/data
-    - main_rows / counts : CQ réalisation (INCHANGÉ)
-    - prep_rows : patients imminents (validation médicale + finalisation draft)
+    Point d'entrée principal /api/data.
     """
     settings = get_global_settings()
     try:
         lookback_days = int(settings.get("LOOKBACK_DAYS", 14) or 14)
     except ValueError:
         lookback_days = 14
+    
+    try:
+        urgency_days = int(settings.get("URGENCY_DAYS", 1) or 1)
+    except ValueError:
+        urgency_days = 1
 
     tabs = CQTab.query.order_by(CQTab.display_order).all()
     machines = CQMachine.query.order_by(CQMachine.display_order).all()
 
     configured_extensions = get_configured_extensions(tab_name if tab_name else None)
+    
+    # Auto-scan au premier chargement si la table ScanCache est encore vide
+    if ScanCache.query.count() == 0:
+        perform_network_scan()
+
     raw_rows = _fetch_aria_activity_rows(lookback_days)
 
-    # ------------------------------------------------------------------
-    # A. CQ RÉALISATION — logique validée, ne pas toucher
-    # ------------------------------------------------------------------
     counts = {t.label: 0 for t in tabs}
     main_by_key = {}
+    now = datetime.now()
 
     for row in raw_rows:
         ipp = str(row.get("patient_id") or "").strip()
@@ -834,7 +711,6 @@ def build_dashboard_data(tab_name=None) -> dict:
         tab_exts = get_configured_extensions(matched_tab.label)
         exts_for_row = configured_extensions or tab_exts
         ext_status = _ext_status_for_scans(scans, exts_for_row)
-
         folder_name = _folder_from_scans(scans, fallback=matched_tab.label)
 
         timeplanner_icon = (
@@ -843,12 +719,35 @@ def build_dashboard_data(tab_name=None) -> dict:
             else '<span class="text-slate-400" title="Aucun créneau planifié">—</span>'
         )
 
-        met_date = _fmt_dt(scheduled) if scheduled else "—"
-        met_color = _met_color_class(scheduled) if isinstance(scheduled, datetime) else ""
+        # ---------------------------------------------------------
+        # CALCUL DU CODE COULEUR D'URGENCE (Jours Ouvrés) ET DU TRI
+        # ---------------------------------------------------------
+        sort_val = datetime.max  # Par défaut, mis tout en bas si pas de date
+        raw_met_date_str = None
+        met_color = "bg-slate-50 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700"
+
+        if scheduled and isinstance(scheduled, datetime):
+            sort_val = scheduled
+            raw_met_date_str = scheduled.isoformat()
+            
+            # Calcul des jours ouvrés de différence
+            bdays = business_days_between(now, scheduled)
+
+            # Passé ou Aujourd'hui -> ROUGE
+            if bdays < 0 or (bdays == 0 and scheduled.date() <= now.date()):
+                met_color = "bg-red-50 text-red-900 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-900"
+            # Urgent (selon le seuil d'administration, ex: 1 jour ouvré) -> ORANGE
+            elif bdays <= urgency_days:
+                met_color = "bg-orange-50 text-orange-900 border-orange-200 dark:bg-orange-900/30 dark:text-orange-300 dark:border-orange-900"
+            # Plus tard -> VERT
+            else:
+                met_color = "bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-900/10 dark:text-emerald-300 dark:border-emerald-900"
+        # ---------------------------------------------------------
 
         row_unique_key = f"{ipp}_{task_id}"
         main_by_key[row_unique_key] = {
             "patient_id": ipp,
+            "task_id": task_id,
             "last_name": last_name,
             "first_name": first_name,
             "localisation": localisation if localisation else "Non spécifié",
@@ -856,8 +755,10 @@ def build_dashboard_data(tab_name=None) -> dict:
             "dcm": ext_status.get(".dcm", _icon_no()),
             "pdf": ext_status.get(".pdf", _icon_no()),
             "folder": folder_name or "—",
-            "met_date": met_date,
+            "met_date": _fmt_dt(scheduled),
             "met_color": met_color,
+            "raw_met_date": raw_met_date_str, # Utile pour le calendrier Javascript
+            "_sort_val": sort_val,            # Utilisé pour le tri
             "energy": default_energy or "—",
             "technique": rules["technique_name"],
             "tech_name": rules["technique_name"],
@@ -869,9 +770,15 @@ def build_dashboard_data(tab_name=None) -> dict:
             "tab_label": matched_tab.label,
         }
 
-    # ------------------------------------------------------------------
-    # B. PRÉPARATION — logique ancien programme (imminent)
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # TRI DES PATIENTS PAR ORDRE D'URGENCE DE LA MET
+    # ---------------------------------------------------------
+    sorted_main_rows = sorted(list(main_by_key.values()), key=lambda x: x["_sort_val"])
+    
+    # Nettoyage de la clé de tri temporaire
+    for r in sorted_main_rows:
+        r.pop("_sort_val", None)
+
     all_prep = _fetch_imminent_prep_rows(lookback_days, tabs)
     prep_rows = []
     for pr in all_prep:
@@ -881,7 +788,7 @@ def build_dashboard_data(tab_name=None) -> dict:
         prep_rows.append(pr)
 
     return {
-        "main_rows": list(main_by_key.values()),
+        "main_rows": sorted_main_rows,
         "prep_rows": prep_rows,
         "counts": counts,
         "configured_extensions": configured_extensions,

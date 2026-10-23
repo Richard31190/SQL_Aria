@@ -12,7 +12,7 @@
             {% for tab in tabs %}
             <button data-tab="{{ tab.label }}"
                     class="tab-btn px-5 py-2.5 rounded-lg text-sm font-bold transition-all border-2 border-transparent text-slate-600 bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700
-                           {% if loop.first %}ring-2 ring-cyan-500 ring-offset-2 ring-offset-slate-100 dark:ring-offset-slate-900 bg-cyan-600 text-white dark:bg-cyan-600 dark:text-white{% endif %}">
+                           {% if (default_tab and tab.label == default_tab) or (not default_tab and loop.first) %}ring-2 ring-cyan-500 ring-offset-2 ring-offset-slate-100 dark:ring-offset-slate-900 bg-cyan-600 text-white dark:bg-cyan-600 dark:text-white{% endif %}">
                 <i class="fa-solid fa-desktop mr-1.5"></i> {{ tab.label }} <span class="tab-count opacity-75"></span>
             </button>
             {% endfor %}
@@ -69,11 +69,11 @@
 
     <!-- Preparation Panel -->
     <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md border border-slate-200 dark:border-slate-700 overflow-hidden">
-        <div class="p-4 bg-slate-900 text-white flex justify-between items-center cursor-pointer" id="prep-header">
+        <div class="p-4 bg-slate-900 text-white flex justify-between items-center cursor-pointer select-none" id="prep-header">
             <div class="flex items-center space-x-2">
                 <i class="fa-solid fa-list-check text-cyan-400"></i>
                 <h3 class="font-bold text-sm">Patients en cours de préparation</h3>
-                <span id="prep-count" class="bg-cyan-600 text-white px-2 py-0.5 rounded-full text-xs">0</span>
+                <span id="prep-count" class="bg-cyan-600 text-white px-2 py-0.5 rounded-full text-xs font-bold">0</span>
             </div>
             <i class="fa-solid fa-chevron-down text-slate-400 transition-transform" id="prep-chevron"></i>
         </div>
@@ -83,13 +83,13 @@
                     <thead class="bg-slate-100 dark:bg-slate-900 text-slate-700 dark:text-slate-300 uppercase tracking-wider text-[10px]">
                         <tr>
                             <th class="p-2 border-b">IPP</th>
-                            <th class="p-2 border-b">Nom / Prenom</th>
+                            <th class="p-2 border-b">Nom / Prénom</th>
                             <th class="p-2 border-b">Tâche</th>
-                            <th class="p-2 border-b">Echéance</th>
+                            <th class="p-2 border-b">Échéance (MET)</th>
                             <th class="p-2 border-b">Statut</th>
                         </tr>
                     </thead>
-                    <tbody id="prep-table-body" class="divide-y divide-slate-200 dark:divide-slate-700">
+                    <tbody id="prep-table-body" class="divide-y divide-slate-200 dark:divide-slate-700 font-medium">
                     </tbody>
                 </table>
             </div>
@@ -101,46 +101,57 @@
 
 {% block scripts %}
 <script>
-    let activeTab = "{{ default_tab }}";
-    // Extensions initiales depuis le serveur (rafraîchies à chaque /api/data)
+    let activeTab = "{{ default_tab|default('') }}";
+    if (!activeTab) {
+        const firstBtn = document.querySelector('.tab-btn');
+        if (firstBtn) activeTab = firstBtn.getAttribute('data-tab');
+    }
+
     let configuredExtensions = {{ configured_extensions|default([])|tojson }};
 
-    const FIXED_COLS_BEFORE = 5; // checkbox + IPP + Nom + Prenom + Localisation
-    // puis N colonnes d'extensions
-    // puis Dossier, MET, Energie, Technique, Timeplanner, Statut, Commentaire = 7
+    // MÉMOIRE DES CASES DÉCOCHÉES (Conservée lors des rafraîchissements AJAX 60s)
+    let uncheckedRows = new Set();
+
+    const FIXED_COLS_BEFORE = 5;
 
     function buildThead(exts) {
         const theadRow = document.getElementById('dashboard-table-head');
+        if (!theadRow) return;
+
         const extHeaders = (exts || []).map(ext =>
             `<th class="p-2 border-b border-slate-700 text-center" title="Fichier ${ext}">${String(ext).toUpperCase()}</th>`
         ).join('');
 
         theadRow.innerHTML = `
             <th class="p-2 border-b border-slate-700 w-10 text-center">
-                <input type="checkbox" id="check-all" checked class="rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer">
+                <input type="checkbox" id="check-all" class="rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer" title="Tout cocher / décocher">
             </th>
             <th class="p-2 border-b border-slate-700">IPP</th>
             <th class="p-2 border-b border-slate-700">Nom</th>
-            <th class="p-2 border-b border-slate-700">Prenom</th>
+            <th class="p-2 border-b border-slate-700">Prénom</th>
             <th class="p-2 border-b border-slate-700">Localisation</th>
             ${extHeaders}
             <th class="p-2 border-b border-slate-700">Dossier</th>
             <th class="p-2 border-b border-slate-700">MET</th>
-            <th class="p-2 border-b border-slate-700">Energie</th>
+            <th class="p-2 border-b border-slate-700">Énergie</th>
             <th class="p-2 border-b border-slate-700">Technique</th>
             <th class="p-2 border-b border-slate-700 text-center">Timeplanner</th>
             <th class="p-2 border-b border-slate-700">Statut</th>
             <th class="p-2 border-b border-slate-700">Commentaire</th>
         `;
 
-        // Re-bind check-all (recréé à chaque build)
         const checkAll = document.getElementById('check-all');
         if (checkAll) {
-            checkAll.addEventListener('change', function () {
+            checkAll.onchange = function () {
                 const isChecked = this.checked;
-                document.querySelectorAll('.row-checkbox').forEach(cb => cb.checked = isChecked);
+                document.querySelectorAll('.row-checkbox').forEach(cb => {
+                    cb.checked = isChecked;
+                    const key = cb.getAttribute('data-key');
+                    if (isChecked) uncheckedRows.delete(key);
+                    else uncheckedRows.add(key);
+                });
                 calculateTime();
-            });
+            };
         }
     }
 
@@ -150,9 +161,12 @@
 
     function loadData() {
         const now = new Date();
-        document.getElementById('last-update-time').innerText = now.toLocaleTimeString('fr-FR', {
-            hour: '2-digit', minute: '2-digit', second: '2-digit'
-        });
+        const updateSpan = document.getElementById('last-update-time');
+        if (updateSpan) {
+            updateSpan.innerText = now.toLocaleTimeString('fr-FR', {
+                hour: '2-digit', minute: '2-digit', second: '2-digit'
+            });
+        }
 
         fetch(`/api/data?tab=${encodeURIComponent(activeTab)}&_t=${Date.now()}`)
             .then(res => res.json())
@@ -163,6 +177,7 @@
                 buildThead(configuredExtensions);
                 renderTable(data.main_rows || []);
                 renderPrepTable(data.prep_rows || []);
+                renderMiniCalendar(data.main_rows || []);
 
                 document.querySelectorAll('.tab-btn').forEach(b => {
                     const c = (data.counts || {})[b.dataset.tab];
@@ -170,72 +185,101 @@
                     if (span) span.innerText = c !== undefined ? `(${c})` : '';
                 });
             })
-            .catch(err => {
-                console.error('Erreur /api/data', err);
-            });
+            .catch(err => console.error('Erreur chargement /api/data:', err));
     }
 
     function renderTable(rows) {
         const tbody = document.getElementById('dashboard-table-body');
+        if (!tbody) return;
         tbody.innerHTML = '';
 
-        const checkAll = document.getElementById('check-all');
-        if (checkAll) checkAll.checked = true;
-
         if (!rows || rows.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="${colCount()}" class="p-4 text-center text-slate-500">Aucun rendez-vous trouvé.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="${colCount()}" class="p-6 text-center text-slate-500 font-medium">Aucun rendez-vous trouvé pour cette machine.</td></tr>`;
             calculateTime();
             return;
         }
 
         const exts = configuredExtensions || [];
+        let allChecked = true;
 
         rows.forEach(r => {
-            // Cellules dynamiques par extension
             const extStatus = r.ext_status || {};
             let extCells = '';
             exts.forEach(ext => {
                 let cell = extStatus[ext];
-                // Compat ancienne API dcm/pdf si ext_status absent
                 if (cell === undefined || cell === null) {
                     if (ext === '.dcm' && r.dcm !== undefined) cell = r.dcm;
                     else if (ext === '.pdf' && r.pdf !== undefined) cell = r.pdf;
-                    else cell = '<span class="text-slate-400">-</span>';
+                    else cell = '<span class="text-slate-400 font-normal">-</span>';
                 }
-                // Si le backend envoie un booléen
-                if (cell === true) cell = '<i class="fa-solid fa-circle-check text-emerald-500"></i>';
-                if (cell === false) cell = '<span class="text-slate-400">-</span>';
-
-                extCells += `<td class="p-2 text-center text-base">${cell}</td>`;
+                if (cell === true) cell = '<i class="fa-solid fa-circle-check text-emerald-500 text-sm"></i>';
+                if (cell === false) cell = '<span class="text-slate-400 font-normal">-</span>';
+                extCells += `<td class="p-2 text-center text-sm">${cell}</td>`;
             });
+
+            // Clef unique par tâche (IPP + task_id) pour éviter l'écrasement en cas de multi-CQ
+            const patientId = r.patient_id || r.ipp || '';
+            const taskId = r.task_id || r.cq_task_id || '';
+            const rowKey = `${patientId}_${taskId}`;
+
+            const isChecked = !uncheckedRows.has(rowKey);
+            if (!isChecked) allChecked = false;
 
             const tr = document.createElement('tr');
             tr.className = `${r.met_color || ''} hover:brightness-95 transition-all`;
             tr.innerHTML = `
                 <td class="p-2 text-center">
                     <input type="checkbox" class="row-checkbox rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer"
-                           checked
+                           data-key="${rowKey}"
+                           ${isChecked ? 'checked' : ''}
                            data-acq="${r.base_duration ?? r.acq_minutes ?? 0}"
                            data-mount="${r.mount_duration ?? r.mount_minutes ?? 0}"
-                           data-tech="${r.tech_name || r.technique || ''}">
+                           data-tech="${r.technique || r.tech_name || ''}">
                 </td>
-                <td class="p-2 font-mono text-slate-900 dark:text-white font-bold">${r.patient_id || r.ipp || ''}</td>
+                <td class="p-2 font-mono text-slate-900 dark:text-white font-bold">${patientId}</td>
                 <td class="p-2 uppercase font-semibold">${r.last_name || r.nom || ''}</td>
                 <td class="p-2 capitalize">${r.first_name || r.prenom || ''}</td>
                 <td class="p-2 font-semibold text-indigo-700 dark:text-indigo-400">${r.localisation || ''}</td>
                 ${extCells}
                 <td class="p-2 text-[10px] text-slate-500 font-mono tracking-tighter truncate max-w-[120px]" title="${r.folder || ''}">${r.folder || ''}</td>
-                <td class="p-2 font-mono">${r.met_date || r.met || ''}</td>
+                <td class="p-2 font-mono font-medium">${r.met_date || r.met || ''}</td>
                 <td class="p-2 font-semibold text-amber-600 dark:text-amber-400">${r.energy || r.energie || ''}</td>
                 <td class="p-2 text-slate-600 dark:text-slate-400 text-[11px]" title="Acquisition: ${r.base_duration ?? ''}m | Montage: ${r.mount_duration ?? ''}m">${r.technique || r.tech_name || ''}</td>
                 <td class="p-2 text-center text-base">${r.timeplanner || ''}</td>
-                <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-slate-700">${r.status || r.statut || ''}</span></td>
+                <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-slate-700/60">${r.status || r.statut || ''}</span></td>
                 <td class="p-2 text-slate-500 italic text-[11px]">${r.comment || r.commentaire || ''}</td>
             `;
             tbody.appendChild(tr);
         });
 
+        const checkAll = document.getElementById('check-all');
+        if (checkAll) checkAll.checked = allChecked;
+
         calculateTime();
+    }
+
+    // LISTENER CHECKBOX DÉLÉGUÉ (Mise à jour de la mémoire)
+    const tableBody = document.getElementById('dashboard-table-body');
+    if (tableBody) {
+        tableBody.addEventListener('change', function (e) {
+            if (e.target && e.target.classList.contains('row-checkbox')) {
+                const key = e.target.getAttribute('data-key');
+                if (e.target.checked) {
+                    uncheckedRows.delete(key);
+                } else {
+                    uncheckedRows.add(key);
+                }
+
+                const checkAll = document.getElementById('check-all');
+                if (!e.target.checked && checkAll) {
+                    checkAll.checked = false;
+                } else if (checkAll) {
+                    const allC = Array.from(document.querySelectorAll('.row-checkbox')).every(cb => cb.checked);
+                    checkAll.checked = allC;
+                }
+                calculateTime();
+            }
+        });
     }
 
     function calculateTime() {
@@ -260,40 +304,88 @@
             const m = grandTotal % 60;
             text = `${h}h${m.toString().padStart(2, '0')}`;
         }
-        document.getElementById('total-time-badge').innerText = text;
+        const badge = document.getElementById('total-time-badge');
+        if (badge) badge.innerText = text;
     }
-
-    document.getElementById('dashboard-table-body').addEventListener('change', function (e) {
-        if (e.target.classList.contains('row-checkbox')) {
-            const checkAll = document.getElementById('check-all');
-            if (!e.target.checked && checkAll) checkAll.checked = false;
-            else if (checkAll) {
-                const allChecked = Array.from(document.querySelectorAll('.row-checkbox')).every(cb => cb.checked);
-                checkAll.checked = allChecked;
-            }
-            calculateTime();
-        }
-    });
 
     function renderPrepTable(rows) {
         const tbody = document.getElementById('prep-table-body');
-        document.getElementById('prep-count').innerText = (rows || []).length;
+        const prepCount = document.getElementById('prep-count');
+        if (prepCount) prepCount.innerText = (rows || []).length;
+        if (!tbody) return;
+
         tbody.innerHTML = '';
+        if (!rows || rows.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-slate-400">Aucune préparation en cours.</td></tr>`;
+            return;
+        }
 
         (rows || []).forEach(r => {
             const tr = document.createElement('tr');
             tr.className = 'hover:bg-slate-50 dark:hover:bg-slate-800/50';
             tr.innerHTML = `
-                <td class="p-2 font-mono font-bold text-slate-900 dark:text-slate-100">${r.patient_id || ''}</td>
-                <td class="p-2 font-semibold">${r.patient_name || ''}</td>
-                <td class="p-2 text-cyan-600 dark:text-cyan-400 font-medium">${r.task_name || ''}</td>
-                <td class="p-2 font-mono text-slate-500">${r.due_date || ''}</td>
-                <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200">${r.status || ''}</span></td>
+                <td class="p-2 font-mono font-bold text-slate-900 dark:text-slate-100">${r.patient_id || r.ipp || ''}</td>
+                <td class="p-2 font-semibold">${r.patient_name || r.nom || ''}</td>
+                <td class="p-2 text-cyan-600 dark:text-cyan-400 font-medium">${r.task_name || r.tache || ''}</td>
+                <td class="p-2 font-mono text-slate-500">${r.due_date || r.met || ''}</td>
+                <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200">${r.status || r.statut || ''}</span></td>
             `;
             tbody.appendChild(tr);
         });
     }
 
+    // DESSINER LE MINI-CALENDRIER DANS LA SIDEBAR
+    function renderMiniCalendar(rows) {
+        const calContainer = document.getElementById('mini-calendar-container');
+        if (!calContainer) return;
+
+        const metDates = new Set();
+        (rows || []).forEach(r => {
+            if (r.raw_met_date) {
+                metDates.add(String(r.raw_met_date).substring(0, 10)); // Extrait YYYY-MM-DD
+            }
+        });
+
+        const today = new Date();
+        const year = today.getFullYear();
+        const month = today.getMonth();
+
+        let firstDay = new Date(year, month, 1).getDay();
+        const startOffset = firstDay === 0 ? 6 : firstDay - 1; // 0 = Lundi
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+        const monthName = today.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+
+        let html = `<div class="bg-slate-800/80 rounded-xl p-3 text-xs shadow-sm border border-slate-700/60">`;
+        html += `<div class="text-center font-bold mb-2 text-slate-200 capitalize text-[11px] tracking-wide">${monthName}</div>`;
+        html += `<div class="grid grid-cols-7 gap-1 text-center mb-1 text-slate-400 font-semibold text-[10px]">
+            <div>L</div><div>M</div><div>M</div><div>J</div><div>V</div><div>S</div><div>D</div>
+        </div><div class="grid grid-cols-7 gap-1 text-center text-[11px]">`;
+
+        for (let i = 0; i < startOffset; i++) {
+            html += `<div></div>`;
+        }
+
+        for (let d = 1; d <= daysInMonth; d++) {
+            const yyyymmdd = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+            const isToday = (d === today.getDate());
+            const hasMet = metDates.has(yyyymmdd);
+
+            let classes = "w-6 h-6 flex flex-col items-center justify-center rounded-full mx-auto relative cursor-default ";
+            if (isToday) {
+                classes += "bg-cyan-500 text-white font-bold shadow-md ";
+            } else {
+                classes += "text-slate-300 font-medium hover:bg-slate-700/50 ";
+            }
+
+            let dot = hasMet ? `<span class="absolute -bottom-0.5 w-1.5 h-1.5 bg-amber-400 rounded-full"></span>` : ``;
+            html += `<div class="${classes}">${d}${dot}</div>`;
+        }
+        html += `</div></div>`;
+        calContainer.innerHTML = html;
+    }
+
+    // CHANGEMENT D'ONGLET MACHINE
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', function () {
             document.querySelectorAll('.tab-btn').forEach(b => {
@@ -305,28 +397,36 @@
         });
     });
 
-    document.getElementById('prep-header').addEventListener('click', function () {
-        document.getElementById('prep-body').classList.toggle('hidden');
-        document.getElementById('prep-chevron').classList.toggle('rotate-180');
-    });
+    // REPLIER / DÉPLIER LE PANNEAU PRÉPARATION
+    const prepHeader = document.getElementById('prep-header');
+    if (prepHeader) {
+        prepHeader.addEventListener('click', function () {
+            document.getElementById('prep-body').classList.toggle('hidden');
+            document.getElementById('prep-chevron').classList.toggle('rotate-180');
+        });
+    }
 
-    document.getElementById('scan-btn').addEventListener('click', function () {
-        this.disabled = true;
-        this.innerHTML = `<i class="fa-solid fa-spinner fa-spin mr-2"></i> Scan en cours...`;
-        fetch('/api/scan', { method: 'POST' })
-            .then(res => res.json())
-            .then(res => {
-                alert(`Scan terminé: ${res.found_new} nouveaux fichiers détectés.`);
-                loadData();
-            })
-            .catch(err => alert('Erreur scan: ' + err))
-            .finally(() => {
-                this.disabled = false;
-                this.innerHTML = `<i class="fa-solid fa-network-wired mr-2"></i> Scan réseau IUCT`;
-            });
-    });
+    // ACTION SCAN RÉSEAU
+    const scanBtn = document.getElementById('scan-btn');
+    if (scanBtn) {
+        scanBtn.addEventListener('click', function () {
+            this.disabled = true;
+            this.innerHTML = `<i class="fa-solid fa-spinner fa-spin mr-2"></i> Scan en cours...`;
+            fetch('/api/scan', { method: 'POST' })
+                .then(res => res.json())
+                .then(res => {
+                    alert(`Scan terminé: ${res.found_new || 0} nouveaux fichiers trouvés.`);
+                    loadData();
+                })
+                .catch(err => alert('Erreur scan: ' + err))
+                .finally(() => {
+                    this.disabled = false;
+                    this.innerHTML = `<i class="fa-solid fa-network-wired mr-2"></i> Scan réseau IUCT`;
+                });
+        });
+    }
 
-    // Filtre recherche patient (client-side)
+    // FILTRE DE RECHERCHE EN TEMPS RÉEL
     const searchInput = document.getElementById('search-input');
     if (searchInput) {
         searchInput.addEventListener('input', function () {
@@ -338,9 +438,13 @@
         });
     }
 
-    document.getElementById('refresh-btn').addEventListener('click', loadData);
+    // RAFFRAÎCHISSEMENT MANUEL
+    const refreshBtn = document.getElementById('refresh-btn');
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', loadData);
+    }
 
-    // Premier rendu header + data
+    // INITIALISATION
     buildThead(configuredExtensions);
     loadData();
     setInterval(loadData, 60000);
