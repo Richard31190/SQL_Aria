@@ -179,6 +179,11 @@
                 renderPrepTable(data.prep_rows || []);
                 renderMiniCalendar(data.main_rows || []);
 
+                // Réglage du scan automatique selon Admin
+                if (data.scan_interval_min !== undefined) {
+                    scheduleBackgroundScan(data.scan_interval_min);
+                }
+
                 document.querySelectorAll('.tab-btn').forEach(b => {
                     const c = (data.counts || {})[b.dataset.tab];
                     const span = b.querySelector('.tab-count');
@@ -554,5 +559,31 @@
     buildThead(configuredExtensions);
     loadData();
     setInterval(loadData, 60000);
+
+
+    // TIMER DE SCAN RÉSEAU EN TÂCHE DE FOND (élargi, jamais bloquant)
+    let backgroundScanTimer = null;
+
+    function scheduleBackgroundScan(minutes) {
+        if (backgroundScanTimer) clearInterval(backgroundScanTimer);
+        const mins = parseInt(minutes) || 3;
+        if (mins > 0) {
+            backgroundScanTimer = setInterval(() => {
+                // Appel silencieux : pas d'alert, juste rafraîchit le tableau après indexation
+                fetch('/api/scan', { method: 'POST' })
+                    .then(res => res.json())
+                    .then(res => {
+                        // Si des fichiers sont trouvés, recharge le tableau automatiquement
+                        if (res.found_new !== undefined) {
+                            loadData();
+                        }
+                    })
+                    .catch(err => console.error('Scan fond erreur:', err));
+            }, mins * 60000);
+        }
+    }
+
+    // Quand l'API répond, on lit la fréquence et on lance/ajuste le timer
+    // (à placer dans loadData, après avoir reçu data)
 </script>
 {% endblock %}

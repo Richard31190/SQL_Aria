@@ -37,6 +37,7 @@ GLOBAL_KEYS = [
     "SCANDIDOS_SIGNATURE",
     "YEAR_OVERLAP_DAYS",
     "URGENCY_DAYS",
+    "NETWORK_SCAN_INTERVAL_MIN",
 ]
 
 
@@ -89,6 +90,7 @@ def get_global_settings() -> dict:
         'SCANDIDOS_SIGNATURE': '114358',
         'YEAR_OVERLAP_DAYS': '15',
         'URGENCY_DAYS': '1',
+        'NETWORK_SCAN_INTERVAL_MIN': '3',
         'MYSQL_HOST': 'localhost',
         'MYSQL_PORT': '3306',
         'MYSQL_USER': 'root',
@@ -799,9 +801,15 @@ def build_dashboard_data(tab_name=None) -> dict:
             continue
         prep_rows.append(pr)
 
+    try:
+        interval = int(settings.get("NETWORK_SCAN_INTERVAL_MIN", 3) or 3)
+    except ValueError:
+        interval = 3
+    
     return {
         "main_rows": sorted_main_rows,
         "prep_rows": prep_rows,
         "counts": counts,
         "configured_extensions": configured_extensions,
+        "scan_interval_min": interval,  # <-- Envoyé au front
     }

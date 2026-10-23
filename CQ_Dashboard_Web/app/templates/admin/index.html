@@ -86,8 +86,13 @@
             {% for s in settings if s.key in global_keys %}
             <div>
                 <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">
+                    {% if s.key == 'NETWORK_SCAN_INTERVAL_MIN' %}
+                    Intervalle scan réseau (minutes)
+                    {% else %}
                     {{ s.description or s.key }}
+                    {% endif %}
                 </label>
+
                 {% if s.key == 'ADMIN_PASSWORD' %}
                 <div class="relative">
                     <input type="password" id="admin_password_field" name="{{ s.key }}" value="{{ s.value }}"
@@ -96,6 +101,13 @@
                         <i id="admin_pwd_eye_icon" class="fa-solid fa-eye"></i>
                     </button>
                 </div>
+
+                {% elif s.key == 'NETWORK_SCAN_INTERVAL_MIN' %}
+                <!-- Notre nouveau champ spécifique intégré proprement -->
+                <input type="number" name="{{ s.key }}" value="{{ s.value }}" min="1" max="60"
+                       class="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100">
+                <p class="text-[10px] text-slate-500 mt-1 italic">S'exécute en arrière-plan sans bloquer l'interface.</p>
+
                 {% else %}
                 <input type="text" name="{{ s.key }}" value="{{ s.value }}"
                        class="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100">
