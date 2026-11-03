@@ -3,24 +3,26 @@
 """
 CQ Dashboard — Logique Métier Précise & Filtrée
 - Découpage automatique & intelligent des extensions Admin (.dcm, .pdf, JSON, etc.)
-- Traversal d'arborescence : IPP détecté dans le dossier parent (ex: Nompatient_12345/Calcul/xxx.pdf)
-- Indépendance vis-à-vis du nom du fichier (recherche par extension uniquement)
-- Tri par priority (Date MET)
-- Calcul jours ouvrés (Urgence de la tâche)
-- Code couleur de criticité dynamique
-- Timeplanner = CQ Patient programmé AUJOURD'HUI sur la machine
+- Traversal d'arborescence : IPP détecté dans le dossier parent
+- Scan réseau atomique & non-bloquant en arrière-plan (la table ne se vide jamais)
+- Lecture de l'énergie du faisceau dans les fichiers DICOM (.dcm)
+- Tri par priority (Date MET) + Calcul jours ouvrés (Urgence)
+- Timeplanner = CQ Patient programmé AUJOURD'HUI
 """
 import os
 import re
 import json
+import threading
 import unicodedata
 from datetime import datetime, date, timedelta
 from collections import defaultdict
 
 from app.models_local import db_local, CQTab, CQMachine, ScanCache, Setting
 
-# Horodatage du dernier scan en mémoire
+# Horodatage et verrous du scan réseau
 _LAST_SCAN_TIME = None
+_SCAN_LOCK = threading.Lock()
+_IS_SCANNING = False
 
 # Driver MySQL
 _MYSQL_DRIVER = None
@@ -83,10 +85,6 @@ def _normalize_ext(ext: str) -> str:
 
 
 def _parse_extensions(raw) -> list:
-    """
-    Analyse n'importe quelle saisie Admin (JSON, chaîne '.pdf , .dcm', liste...)
-    et extrait individuellement chaque extension propre : ['.pdf', '.dcm']
-    """
     if raw is None:
         return []
 
@@ -139,23 +137,23 @@ def match_tab_keyword(keyword: str, text: str) -> bool:
 
 def get_global_settings() -> dict:
     defaults = {
-        "ADMIN_PASSWORD": "admin",
-        "LOOKBACK_DAYS": "14",
-        "SCAN_DEPTH": "3",
-        "SCANDIDOS_SIGNATURE": "114358",
-        "YEAR_OVERLAP_DAYS": "15",
-        "URGENCY_DAYS": "1",
-        "NETWORK_SCAN_INTERVAL_MIN": "3",
-        "MYSQL_HOST": "localhost",
-        "MYSQL_PORT": "3306",
-        "MYSQL_USER": "root",
-        "MYSQL_PASSWORD": "",
-        "MYSQL_DB": "db_iuct",
+        "ADMIN_PASSWORD": os.getenv("ADMIN_PASSWORD", "admin"),
+        "LOOKBACK_DAYS": os.getenv("LOOKBACK_DAYS", "14"),
+        "SCAN_DEPTH": os.getenv("SCAN_DEPTH", "3"),
+        "SCANDIDOS_SIGNATURE": os.getenv("SCANDIDOS_SIGNATURE", "114358"),
+        "YEAR_OVERLAP_DAYS": os.getenv("YEAR_OVERLAP_DAYS", "15"),
+        "URGENCY_DAYS": os.getenv("URGENCY_DAYS", "1"),
+        "NETWORK_SCAN_INTERVAL_MIN": os.getenv("NETWORK_SCAN_INTERVAL_MIN", "3"),
+        "MYSQL_HOST": os.getenv("MYSQL_HOST") or os.getenv("DATABASE_HOST", "localhost"),
+        "MYSQL_PORT": os.getenv("MYSQL_PORT") or os.getenv("DATABASE_PORT", "3306"),
+        "MYSQL_USER": os.getenv("MYSQL_USER") or os.getenv("DATABASE_USER", "root"),
+        "MYSQL_PASSWORD": os.getenv("MYSQL_PASSWORD") or os.getenv("DATABASE_PASSWORD", ""),
+        "MYSQL_DB": os.getenv("MYSQL_DB") or os.getenv("DATABASE_NAME", "db_iuct"),
     }
     rows = Setting.query.all()
-    setting_map = {r.key: r.value for r in rows if r.key}
+    setting_map = {r.key: r.value for r in rows if r.key and r.value is not None}
     for k, v in defaults.items():
-        if k not in setting_map or setting_map[k] is None:
+        if k not in setting_map or not setting_map[k]:
             setting_map[k] = v
     return setting_map
 
@@ -201,10 +199,6 @@ def get_mysql_connection(cfg: dict = None):
 
 
 def extract_ipp_candidates(text: str) -> list:
-    """
-    Extrait les numéros d'IPP (séquences de 3 à 10 chiffres).
-    Ignore les sous-dossiers qui ne sont que des années (ex: 2024, 2025, 2026).
-    """
     if not text:
         return []
 
@@ -219,10 +213,6 @@ def extract_ipp_candidates(text: str) -> list:
 
 
 def find_patient_folder_info(dirpath: str, root_path: str):
-    """
-    Inspecte les dossiers parents depuis root_path jusqu'à dirpath.
-    Retourne (nom_dossier_patient, list_des_ipps) dès qu'un dossier contient un IPP.
-    """
     try:
         rel = os.path.relpath(dirpath, root_path)
     except Exception:
@@ -297,14 +287,6 @@ def get_configured_extensions(tab_label=None) -> list:
     return ordered if ordered else [".dcm", ".pdf"]
 
 
-def _icon_ok():
-    return '<i class="fa-solid fa-circle-check text-emerald-500 text-sm"></i>'
-
-
-def _icon_no():
-    return '<span class="text-slate-400 font-normal">-</span>'
-
-
 def _fmt_dt(value):
     if not value:
         return "—"
@@ -319,17 +301,6 @@ def _fmt_dt_short(value):
     if isinstance(value, datetime):
         return value.strftime("%d/%m/%Y")
     return str(value)
-
-
-def _scans_for_patient(ipp: str) -> list:
-    if not ipp:
-        return []
-    raw_ipp = str(ipp).strip()
-    clean_ipp = _clean_ipp(raw_ipp)
-
-    return ScanCache.query.filter(
-        (ScanCache.patient_id == raw_ipp) | (ScanCache.patient_id == clean_ipp)
-    ).all()
 
 
 def _ext_status_for_scans(scans, configured_extensions: list) -> dict:
@@ -350,7 +321,11 @@ def _ext_status_for_scans(scans, configured_extensions: list) -> dict:
     parsed_configured = _parse_extensions(configured_extensions) or [".dcm", ".pdf"]
     status = {}
     for ext in parsed_configured:
-        status[ext] = ext in found
+        is_found = ext in found
+        status[ext] = is_found
+        status[ext.lstrip(".")] = is_found
+        status[ext.upper()] = is_found
+        status[ext.lstrip(".").upper()] = is_found
     return status
 
 
@@ -365,6 +340,54 @@ def _folder_from_scans(scans, fallback: str = "") -> str:
             except Exception:
                 pass
     return fallback or "-"
+
+
+def _extract_dicom_energy(file_path: str) -> str:
+    """
+    Lit l'énergie du faisceau depuis les métadonnées d'un fichier DICOM RP/Plan.
+    Exemples de retour : '6X', '6FFF', '10X', '10FFF', '18X'.
+    """
+    if not file_path or not file_path.lower().endswith(".dcm"):
+        return ""
+    try:
+        import pydicom
+        ds = pydicom.dcmread(file_path, stop_before_pixels=True, force=True)
+        
+        beam_seq = getattr(ds, "BeamSequence", None)
+        if beam_seq and len(beam_seq) > 0:
+            b = beam_seq[0]
+            cp_seq = getattr(b, "ControlPointSequence", None)
+            if cp_seq and len(cp_seq) > 0:
+                cp0 = cp_seq[0]
+                if hasattr(cp0, "NominalBeamEnergy"):
+                    raw_e = str(cp0.NominalBeamEnergy).strip()
+                    if raw_e.endswith(".0"):
+                        raw_e = raw_e[:-2]
+                    
+                    mode = "X"
+                    f_seq = getattr(b, "PrimaryFluenceModeSequence", None)
+                    if f_seq and len(f_seq) > 0:
+                        f_mode = getattr(f_seq[0], "FluenceModeID", "")
+                        if "FFF" in str(f_mode).upper():
+                            mode = "FFF"
+                    return f"{raw_e}{mode}"
+    except Exception:
+        pass
+    return ""
+
+
+def _energy_from_scans(scans, fallback: str = "") -> str:
+    """Récupère l'énergie de faisceau DICOM extraite lors du scan réseau."""
+    for s in scans:
+        raw = s.extra_data_json
+        if raw:
+            try:
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(data, dict) and data.get("energy"):
+                    return data["energy"]
+            except Exception:
+                pass
+    return fallback or "—"
 
 
 def business_days_between(d1: datetime, d2: datetime) -> int:
@@ -385,18 +408,12 @@ def business_days_between(d1: datetime, d2: datetime) -> int:
 
 
 # ===========================================================================
-# Scan Réseau IUCT
+# Scan Réseau Atomique & Non-Bloquant
 # ===========================================================================
 
 def perform_network_scan() -> int:
     global _LAST_SCAN_TIME
     print("=== DEBUT perform_network_scan ===")
-
-    try:
-        ScanCache.query.delete()
-        db_local.session.commit()
-    except Exception:
-        db_local.session.rollback()
 
     settings = get_global_settings()
     try:
@@ -425,8 +442,9 @@ def perform_network_scan() -> int:
         pass
 
     tabs = CQTab.query.order_by(CQTab.display_order).all()
-    scanned_count = 0
     seen_keys = set()
+    patient_energies = {}
+    new_scans = []
 
     for tab in tabs:
         cfg = tab._get_config() if hasattr(tab, "_get_config") else {}
@@ -499,6 +517,14 @@ def perform_network_scan() -> int:
 
                         full_file_path = os.path.join(dirpath, fname)
 
+                        # Extraction DICOM Énergie
+                        if f_ext == ".dcm":
+                            for clean_ipp in target_ipps:
+                                if clean_ipp not in patient_energies:
+                                    e_found = _extract_dicom_energy(full_file_path)
+                                    if e_found:
+                                        patient_energies[clean_ipp] = e_found
+
                         for clean_ipp in target_ipps:
                             key = (clean_ipp, full_file_path)
                             if key in seen_keys:
@@ -511,6 +537,7 @@ def perform_network_scan() -> int:
                                     "base_path": base_path,
                                     "patient_folder": _folder_name or "",
                                     "tab_id": tab.id,
+                                    "energy": patient_energies.get(clean_ipp, ""),
                                 }
                             )
 
@@ -521,18 +548,53 @@ def perform_network_scan() -> int:
                                 file_path=full_file_path,
                                 extra_data_json=extra_data,
                             )
-                            db_local.session.add(sc)
-                            scanned_count += 1
+                            new_scans.append(sc)
 
+    # MISE À JOUR ATOMIQUE DU CACHE EN BASE DE DONNÉES
     try:
+        ScanCache.query.delete()
+        db_local.session.add_all(new_scans)
         db_local.session.commit()
         _LAST_SCAN_TIME = datetime.now()
-        print(f"=== FIN SCAN : {scanned_count} fichiers indexés ===")
-    except Exception:
+        print(f"=== FIN SCAN ATOMIQUE : {len(new_scans)} fichiers indexés ===")
+        return len(new_scans)
+    except Exception as e:
+        print(f"[ScanCache Error] {e}")
         db_local.session.rollback()
         return 0
 
-    return scanned_count
+
+def trigger_async_network_scan():
+    """Déclenche le scan réseau en arrière-plan sans bloquer Flask."""
+    global _IS_SCANNING
+    with _SCAN_LOCK:
+        if _IS_SCANNING:
+            return
+        _IS_SCANNING = True
+
+    app = None
+    try:
+        from flask import current_app
+        app = current_app._get_current_object()
+    except Exception:
+        pass
+
+    def _worker():
+        global _IS_SCANNING
+        try:
+            if app:
+                with app.app_context():
+                    perform_network_scan()
+            else:
+                perform_network_scan()
+        except Exception as e:
+            print(f"[Scan Thread Error] {e}")
+        finally:
+            with _SCAN_LOCK:
+                _IS_SCANNING = False
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
 
 
 # ===========================================================================
@@ -606,7 +668,8 @@ def _fetch_aria_activity_rows(lookback_days: int) -> list:
         conn, cursor = get_mysql_connection(cfg)
         try:
             cursor.execute(query, (lookback_days, lookback_days))
-            return cursor.fetchall() or []
+            rows = cursor.fetchall() or []
+            return rows
         finally:
             try:
                 cursor.close()
@@ -759,10 +822,6 @@ def _is_scanner_tdm(display_focus: str) -> bool:
 def _is_appel_patient(display_focus: str) -> bool:
     n = normalize(display_focus or "")
     return n.startswith("appelerpatient") or n.startswith("appelpatient")
-
-
-def _is_realisation_dosi(display_focus: str) -> bool:
-    return "realisationdosi" in normalize(display_focus or "")
 
 
 def _find_tab_for_workflow(workflow: str, tabs: list):
@@ -960,18 +1019,21 @@ def build_dashboard_data(tab_name=None) -> dict:
         scan_interval_min = 3
 
     # ---------------------------------------------------------------
-    # GESTION AUTOMATIQUE DU SCAN RÉSEAU (au lancement & à intervalle)
+    # GESTION DES SCANS RÉSEAU (Synchrone si 0 ligne, Asynchrone ensuite)
     # ---------------------------------------------------------------
-    cache_needs_refresh = False
-    if _LAST_SCAN_TIME is None or ScanCache.query.count() == 0:
-        cache_needs_refresh = True
-    else:
-        time_since_last = datetime.now() - _LAST_SCAN_TIME
-        if time_since_last > timedelta(minutes=scan_interval_min):
-            cache_needs_refresh = True
-
-    if cache_needs_refresh:
+    cache_count = ScanCache.query.count()
+    if cache_count == 0:
+        # Premier lancement : on scanne immédiatement avant d'afficher
         perform_network_scan()
+    else:
+        # Rafraîchissement : scan non-bloquant en arrière-plan
+        if _LAST_SCAN_TIME is None:
+            _LAST_SCAN_TIME = datetime.now()
+            trigger_async_network_scan()
+        else:
+            time_since_last = datetime.now() - _LAST_SCAN_TIME
+            if time_since_last > timedelta(minutes=scan_interval_min):
+                trigger_async_network_scan()
 
     tabs = CQTab.query.order_by(CQTab.display_order).all()
     machines = CQMachine.query.order_by(CQMachine.display_order).all()
@@ -982,6 +1044,16 @@ def build_dashboard_data(tab_name=None) -> dict:
     configured_extensions = get_configured_extensions(tab_name if tab_name else None)
 
     raw_rows = _fetch_aria_activity_rows(lookback_days)
+
+    # INDEXATION EN MÉMOIRE DE LA BASE CACHE
+    all_scans = ScanCache.query.all()
+    scans_by_ipp = defaultdict(list)
+    for sc in all_scans:
+        c_ipp = _clean_ipp(sc.patient_id)
+        if c_ipp:
+            scans_by_ipp[c_ipp].append(sc)
+        if sc.patient_id and sc.patient_id != c_ipp:
+            scans_by_ipp[sc.patient_id].append(sc)
 
     counts = {t.label: 0 for t in tabs}
     main_by_key = {}
@@ -1014,22 +1086,27 @@ def build_dashboard_data(tab_name=None) -> dict:
             continue
 
         rules = find_technique_rules(display_focus, machines)
-        default_energy = (
-            matched_tab.get_default_energy()
-            if hasattr(matched_tab, "get_default_energy")
-            else ""
-        )
+        
+        # Détermination énergie par défaut selon la machine ou l'onglet (ex: 6FFF pour Tomo)
+        default_energy = ""
+        if hasattr(matched_tab, "get_default_energy"):
+            default_energy = matched_tab.get_default_energy() or ""
+        if not default_energy and "tomo" in matched_tab.label.lower():
+            default_energy = "6FFF"
 
-        scans = _scans_for_patient(ipp)
+        clean_ipp_val = _clean_ipp(ipp)
+        scans = scans_by_ipp.get(clean_ipp_val, []) or scans_by_ipp.get(ipp, [])
         tab_exts = get_configured_extensions(matched_tab.label)
         exts_for_row = configured_extensions or tab_exts
         ext_status = _ext_status_for_scans(scans, exts_for_row)
 
         folder_name = _folder_from_scans(scans, fallback="") if scans else "-"
 
+        # Énergie issue du DICOM ou fallback sur la machine/onglet
+        detected_energy = _energy_from_scans(scans, fallback=default_energy)
+
         # Timeplanner = CQ programmé aujourd'hui
-        ipp_clean = _clean_ipp(ipp)
-        is_on_timeplanner = ipp_clean in timeplanner_ipps
+        is_on_timeplanner = clean_ipp_val in timeplanner_ipps or ipp in timeplanner_ipps
 
         timeplanner_icon = (
             '<i class="fa-solid fa-calendar-check text-emerald-500 text-base" '
@@ -1084,7 +1161,7 @@ def build_dashboard_data(tab_name=None) -> dict:
             "met_color": met_color,
             "raw_met_date": raw_met_date_str,
             "_sort_val": sort_val,
-            "energy": default_energy or "—",
+            "energy": detected_energy or "—",
             "technique": rules.get("technique_full") or rules.get("technique_name") or "",
             "tech_name": rules.get("technique_name") or "",
             "base_duration": rules["acquisition"],
