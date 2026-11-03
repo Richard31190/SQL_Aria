@@ -548,29 +548,38 @@
     }
 
     // DECLENCHEUR ANIMÉ - ACTUALISATION ARIA
-    function triggerAriaRefresh() {
+    async function triggerAriaRefresh() {
         const btn = document.getElementById('refresh-btn');
         const icon = document.getElementById('icon-aria-refresh');
+        const text = document.getElementById('text-aria-refresh');
 
         if (!btn || !icon) return;
 
+        // 1. Activer l'état de chargement
         btn.disabled = true;
         btn.classList.add('opacity-75', 'cursor-not-allowed');
         icon.classList.add('fa-spin');
 
-        const loadPromise = loadData();
-        const handleDone = () => {
+        const originalText = text ? text.innerText : 'ARIA';
+        if (text) {
+            text.innerText = 'Actualisation ARIA...';
+        }
+
+        try {
+            // 2. Recharger les données du tableau
+            await loadData();
+        } catch (error) {
+            console.error("Erreur lors du rafraîchissement ARIA:", error);
+        } finally {
+            // 3. Restaurer l'état initial (avec un petit délai pour la fluidité visuelle)
             setTimeout(() => {
                 btn.disabled = false;
                 btn.classList.remove('opacity-75', 'cursor-not-allowed');
                 icon.classList.remove('fa-spin');
-            }, 600);
-        };
-
-        if (loadPromise && typeof loadPromise.finally === 'function') {
-            loadPromise.finally(handleDone);
-        } else {
-            handleDone();
+                if (text) {
+                    text.innerText = originalText;
+                }
+            }, 500);
         }
     }
 
