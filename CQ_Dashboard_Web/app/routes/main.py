@@ -1,3 +1,4 @@
+# *** routes/main.py ***
 # -*- coding: utf-8 -*-
 # *** routes/main.py ***
 from flask import Blueprint, render_template, jsonify, request
@@ -23,10 +24,8 @@ main_bp = Blueprint("main", __name__)
 def index():
     tabs = CQTab.query.order_by(CQTab.display_order).all()
     default_tab = tabs[0].label if tabs else ""
-    # Extensions au chargement initial
     configured_extensions = get_configured_extensions()
     
-    # Récupération initiale des données pour le premier affichage
     initial_data = build_dashboard_data(default_tab) if default_tab else {}
 
     return render_template(
@@ -41,14 +40,14 @@ def index():
 
 @main_bp.route("/api/data")
 def get_data():
-    tab_name = request.args.get("tab")
+    tab_name = request.args.get("tab") or request.args.get("tab_id")
     data = build_dashboard_data(tab_name)
     
-    # Transmission de la totalité des données générées par la logique métier
     return jsonify(
         {
             "status": "success",
             "timestamp": request.args.get("_t"),
+            "phantom": data.get("phantom", ""),  # <-- C'ÉTAIT CETTE LIGNE QUI MANQUAIT !
             "main_rows": data.get("main_rows", []),
             "prep_rows": data.get("prep_rows", []),
             "counts": data.get("counts", {}),

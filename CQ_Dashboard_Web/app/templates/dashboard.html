@@ -1,5 +1,4 @@
 <!-- templates\dashboard.html -->
-<!-- templates/dashboard.html -->
 {% extends 'base.html' %}
 
 {% block content %}
@@ -65,7 +64,7 @@
             <table class="w-full text-xs text-left border-collapse">
                 <thead class="bg-slate-900 text-slate-300 uppercase tracking-wider text-[11px]">
                     <tr id="dashboard-table-head">
-                        <!-- Construit dynamiquement par JS selon extensions Admin -->
+                        <!-- Construit dynamiquement par JS selon extensions Admin + phantom -->
                     </tr>
                 </thead>
                 <tbody id="dashboard-table-body" class="divide-y divide-slate-200 dark:divide-slate-700 font-medium">
@@ -180,18 +179,29 @@
 
     let configuredExtensions = {{ configured_extensions|default([])|tojson }};
     let uncheckedRows = new Set();
-    const FIXED_COLS_BEFORE = 5;
+    const FIXED_COLS_BEFORE = 5; // checkbox, IPP, Nom, Prénom, Localisation
+    let currentPhantom = "";     // "Delta 4" / "Octavius 4D" / "" depuis l'API
 
     // Mémorise le dernier planning chargé
     let currentMachineSchedule = [];
+
+    function isDeltaPhantom() {
+        return String(currentPhantom || '').toLowerCase().includes('delta');
+    }
 
     function buildThead(exts) {
         const theadRow = document.getElementById('dashboard-table-head');
         if (!theadRow) return;
 
+        const isDelta = isDeltaPhantom();
         const extHeaders = (exts || []).map(ext =>
             `<th class="p-2 border-b border-slate-700 text-center" title="Fichier ${ext}">${String(ext).toUpperCase()}</th>`
         ).join('');
+
+        // Colonne Durée d'irradiation uniquement pour Delta 4
+        const durationHeader = isDelta
+            ? `<th class="p-2 border-b border-slate-700 text-center" title="Durée d'irradiation extraite du fichier ScandiDos">Durée (min)</th>`
+            : '';
 
         theadRow.innerHTML = `
             <th class="p-2 border-b border-slate-700 w-10 text-center">
@@ -201,6 +211,7 @@
             <th class="p-2 border-b border-slate-700">Nom</th>
             <th class="p-2 border-b border-slate-700">Prénom</th>
             <th class="p-2 border-b border-slate-700">Localisation</th>
+            ${durationHeader}
             ${extHeaders}
             <th class="p-2 border-b border-slate-700">Dossier</th>
             <th class="p-2 border-b border-slate-700">MET</th>
@@ -227,7 +238,8 @@
     }
 
     function colCount() {
-        return FIXED_COLS_BEFORE + (configuredExtensions || []).length + 7;
+        // FIXED_COLS_BEFORE + extensions + (Durée si Delta 4) + 7 colonnes fixes après
+        return FIXED_COLS_BEFORE + (configuredExtensions || []).length + (isDeltaPhantom() ? 1 : 0) + 7;
     }
 
     function loadData() {
@@ -245,6 +257,9 @@
                 if (Array.isArray(data.configured_extensions) && data.configured_extensions.length) {
                     configuredExtensions = data.configured_extensions;
                 }
+
+                // Phantom de l'onglet actif (Admin : Delta 4 / Octavius 4D)
+                currentPhantom = data.phantom || "";
 
                 // Mémorisation du planning pour la modale
                 currentMachineSchedule = data.machine_schedule || [];
@@ -288,6 +303,7 @@
         }
 
         const exts = configuredExtensions || [];
+        const isDelta = isDeltaPhantom();
         let allChecked = true;
 
         rows.forEach(r => {
@@ -316,6 +332,25 @@
             const techniqueKey = r.tech_name || r.technique || '';
             const safeTitle = String(techniqueLabel).replace(/"/g, '&quot;');
 
+            // Durée d'acquisition pour le calcul du temps :
+            // Delta 4 → priorité à la durée ScandiDos si présente, sinon durée de base Admin
+            let acqForCalc = r.base_duration ?? r.acq_minutes ?? 0;
+            if (isDelta && r.delta4_duration != null && r.delta4_duration !== '' && !isNaN(parseFloat(r.delta4_duration))) {
+                acqForCalc = parseFloat(r.delta4_duration);
+            }
+
+            // Cellule Durée (min) — Delta 4 uniquement
+            let durationCell = '';
+            if (isDelta) {
+                const durDisplay = (r.delta4_duration != null && r.delta4_duration !== '' && !isNaN(parseFloat(r.delta4_duration)))
+                    ? parseFloat(r.delta4_duration).toFixed(1)
+                    : '-';
+                durationCell = `<td class="p-2 text-center font-mono font-semibold text-cyan-700 dark:text-cyan-400">${durDisplay}</td>`;
+            }
+
+            // Localisation : préfère delta4_fraction (ScandiDos) si dispo, sinon localisation ARIA
+            const locDisplay = (isDelta && r.delta4_fraction) ? r.delta4_fraction : (r.localisation || '');
+
             const tr = document.createElement('tr');
             tr.className = `${r.met_color || ''} hover:brightness-95 transition-all`;
             tr.innerHTML = `
@@ -323,21 +358,22 @@
                 <input type="checkbox" class="row-checkbox rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer"
                        data-key="${rowKey}"
                        ${isChecked ? 'checked' : ''}
-                       data-acq="${r.base_duration ?? r.acq_minutes ?? 0}"
+                       data-acq="${acqForCalc}"
                        data-mount="${r.mount_duration ?? r.mount_minutes ?? 0}"
                        data-tech="${techniqueKey.replace(/"/g, '&quot;')}">
             </td>
             <td class="p-2 font-mono text-slate-900 dark:text-white font-bold">${patientId}</td>
             <td class="p-2 uppercase font-semibold">${r.last_name || r.nom || ''}</td>
             <td class="p-2 capitalize">${r.first_name || r.prenom || ''}</td>
-            <td class="p-2 font-semibold text-indigo-700 dark:text-indigo-400">${r.localisation || ''}</td>
+            <td class="p-2 font-semibold text-indigo-700 dark:text-indigo-400">${locDisplay}</td>
+            ${durationCell}
             ${extCells}
             <td class="p-2 text-[10px] text-slate-500 dark:text-slate-400 font-mono tracking-tighter truncate max-w-[120px]" title="${r.full_path && r.full_path !== '-' ? r.full_path : (r.folder || '')}">
-            ${r.folder || '-'}</td> 
+            ${r.folder || '-'}</td>
            <td class="p-2 font-mono font-medium">${r.met_date || r.met || ''}</td>
             <td class="p-2 font-semibold text-amber-600 dark:text-amber-400">${r.energy || r.energie || ''}</td>
             <td class="p-2 text-slate-600 dark:text-slate-400 text-[11px] max-w-[220px]"
-                title="Acquisition: ${r.base_duration ?? ''} min | Montage: ${r.mount_duration ?? ''} min">
+                title="Acquisition: ${acqForCalc} min | Montage: ${r.mount_duration ?? ''} min">
                 <span class="block truncate" title="${safeTitle}">${techniqueLabel}</span>
             </td>
             <td class="p-2 text-center text-base">${r.timeplanner || ''}</td>
@@ -377,16 +413,17 @@
         const techniques = {};
 
         document.querySelectorAll('.row-checkbox:checked').forEach(cb => {
-            totalAcq += parseInt(cb.dataset.acq) || 0;
+            // parseFloat pour les durées ScandiDos (ex: 2.3456 min)
+            totalAcq += parseFloat(cb.dataset.acq) || 0;
             const tech = cb.dataset.tech;
-            const mount = parseInt(cb.dataset.mount) || 0;
+            const mount = parseFloat(cb.dataset.mount) || 0;
             if (tech && techniques[tech] === undefined) {
                 techniques[tech] = mount;
             }
         });
 
         const totalMount = Object.values(techniques).reduce((a, b) => a + b, 0);
-        const grandTotal = totalAcq + totalMount;
+        const grandTotal = Math.round(totalAcq + totalMount);
 
         let text = grandTotal + ' min';
         if (grandTotal >= 60) {

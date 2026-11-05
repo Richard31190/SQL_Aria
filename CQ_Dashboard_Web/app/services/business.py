@@ -6,6 +6,7 @@ CQ Dashboard — Logique Métier Précise & Filtrée
 - Traversal d'arborescence : IPP détecté dans le dossier parent
 - Scan réseau atomique & non-bloquant en arrière-plan (la table ne se vide jamais)
 - Lecture de l'énergie du faisceau dans les fichiers DICOM (.dcm)
+- Extraction ScandiDos (durée d'irradiation) UNIQUEMENT pour les patients affichés (Delta 4)
 - Tri par priority (Date MET) + Calcul jours ouvrés (Urgence)
 - Timeplanner = CQ Patient programmé AUJOURD'HUI
 """
@@ -249,6 +250,7 @@ def find_tab_for_focus(focus_text: str, tabs: list):
                 return tab
     return None
 
+
 def _get_tab_keywords(tab) -> list:
     """Extrait tous les mots-clés d'un CQTab pour le matching ARIA (device)."""
     if not tab:
@@ -283,6 +285,7 @@ def _get_tab_keywords(tab) -> list:
         kws.append(lab)
 
     return kws
+
 
 def find_technique_rules(task_text: str, machines: list) -> dict:
     full_text = (task_text or "").strip()
@@ -377,6 +380,7 @@ def _folder_from_scans(scans, fallback: str = "") -> str:
                 pass
     return fallback or "-"
 
+
 def _full_path_from_scans(scans, fallback: str = "") -> str:
     """Reconstitue le chemin complet (base_path + dossier patient) pour l'infobulle."""
     for s in scans:
@@ -395,6 +399,7 @@ def _full_path_from_scans(scans, fallback: str = "") -> str:
                 pass
     return fallback or "-"
 
+
 def _extract_dicom_energy(file_path: str) -> str:
     """
     Lit l'énergie du faisceau depuis les métadonnées d'un fichier DICOM RP/Plan.
@@ -405,7 +410,7 @@ def _extract_dicom_energy(file_path: str) -> str:
     try:
         import pydicom
         ds = pydicom.dcmread(file_path, stop_before_pixels=True, force=True)
-        
+
         beam_seq = getattr(ds, "BeamSequence", None)
         if beam_seq and len(beam_seq) > 0:
             b = beam_seq[0]
@@ -416,7 +421,7 @@ def _extract_dicom_energy(file_path: str) -> str:
                     raw_e = str(cp0.NominalBeamEnergy).strip()
                     if raw_e.endswith(".0"):
                         raw_e = raw_e[:-2]
-                    
+
                     mode = "X"
                     f_seq = getattr(b, "PrimaryFluenceModeSequence", None)
                     if f_seq and len(f_seq) > 0:
@@ -443,6 +448,63 @@ def _energy_from_scans(scans, fallback: str = "") -> str:
     return fallback or "—"
 
 
+def read_delta4_scandidos(folder_path: str, signature: str = "114358"):
+    """
+    Parcourt le dossier ciblé (et ses sous-dossiers) à la recherche du fichier
+    d'irradiation ScandiDos Delta 4 (sans extension).
+    Retourne (fraction, duration_minutes).
+
+    IMPORTANT : fonction gourmande — à appeler UNIQUEMENT pour les patients
+    de la liste affichée, jamais pendant le scan réseau global.
+    """
+    if not folder_path or not os.path.isdir(folder_path):
+        return None, None
+    try:
+        for root, dirs, files in os.walk(folder_path):
+            for file_name in files:
+                name, ext = os.path.splitext(file_name)
+                # Ignorer les extensions connues
+                if ext.lower() in [".dcm", ".pdf", ".xml", ".json", ".txt", ".ini", ".rtf", ".docx", ".zip"]:
+                    continue
+                # Signature du fichier sans extension ScandiDos
+                if (name.count(".") >= 5 and name.replace(".", "").isdigit()) or (
+                    signature and signature in name
+                ):
+                    full_p = os.path.join(root, file_name)
+                    try:
+                        with open(full_p, "rb") as f:
+                            content = f.read().decode("latin-1", errors="ignore").replace("\x00", " ")
+                            tokens = re.findall(r"[A-Za-z0-9_.\-\/\^]+", content)
+                            fraction, duration = None, None
+                            for i, t in enumerate(tokens):
+                                if "_QA" in t:
+                                    parts, j = [], i
+                                    while j > 0 and tokens[j - 1] != "0":
+                                        parts.insert(
+                                            0,
+                                            tokens[j].replace("_QA", "").replace("_OK", "").strip(),
+                                        )
+                                        j -= 1
+                                    if j > 0:
+                                        parts.insert(
+                                            0,
+                                            tokens[j].replace("_QA", "").replace("_OK", "").strip(),
+                                        )
+                                    fraction = " ".join(parts)
+                                if t == "VERIFICATION":
+                                    for j in range(i, min(i + 20, len(tokens))):
+                                        if re.match(r"^\d+\.\d{4,}$", tokens[j]):
+                                            duration = float(tokens[j])
+                                            break
+                            if duration is not None or fraction is not None:
+                                return fraction, duration
+                    except Exception:
+                        continue
+    except Exception as e:
+        print(f"[ScandiDos Error] {e}")
+    return None, None
+
+
 def business_days_between(d1: datetime, d2: datetime) -> int:
     if not d1 or not d2:
         return 0
@@ -465,6 +527,10 @@ def business_days_between(d1: datetime, d2: datetime) -> int:
 # ===========================================================================
 
 def perform_network_scan() -> int:
+    """
+    Scan réseau RAPIDE : indexe uniquement les fichiers (extensions Admin)
+    + énergie DICOM. AUCUNE lecture ScandiDos ici.
+    """
     global _LAST_SCAN_TIME
     print("=== DEBUT perform_network_scan ===")
 
@@ -678,6 +744,7 @@ def _is_cq_ready_task(display_focus: str, status: str) -> bool:
 
     return False
 
+
 def _fetch_aria_activity_rows(lookback_days: int) -> list:
     query = """
         SELECT
@@ -831,11 +898,15 @@ def _fetch_timeplanner_cq_ipps_today(tabs: list) -> dict:
         return {}
     finally:
         try:
-            if cursor: cursor.close()
-        except: pass
+            if cursor:
+                cursor.close()
+        except Exception:
+            pass
         try:
-            if conn: conn.close()
-        except: pass
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 
 # ===========================================================================
@@ -867,7 +938,7 @@ def _find_tab_for_workflow(workflow: str, tabs: list):
     if not tabs:
         return None
     matched = find_tab_for_focus(workflow or "", tabs)
-    return matched  
+    return matched
 
 
 def _fetch_imminent_prep_rows(lookback_days: int, tabs: list) -> list:
@@ -1045,9 +1116,8 @@ def _fetch_next_cq_slot(tab_name):
 
     cfg = get_aria_mysql_config()
 
-    # Structure exacte vérifiée : appointments.device, appointments.start_scheduled_period
     sql = """
-        SELECT 
+        SELECT
             a.start_scheduled_period AS start_time,
             COALESCE(a.device, '') AS device
         FROM appointments a
@@ -1055,7 +1125,7 @@ def _fetch_next_cq_slot(tab_name):
         WHERE a.start_scheduled_period >= NOW()
           AND a.start_scheduled_period < CURDATE() + INTERVAL 1 DAY
           AND (
-              p.family_name_official LIKE '%CQ HEBDOMADAIRE%' 
+              p.family_name_official LIKE '%CQ HEBDOMADAIRE%'
               OR p.id = 3
           )
           AND LOWER(COALESCE(a.status, '')) IN ('booked', 'arrived')
@@ -1073,14 +1143,20 @@ def _fetch_next_cq_slot(tab_name):
         return None
     finally:
         try:
-            if cursor: cursor.close()
-        except Exception: pass
+            if cursor:
+                cursor.close()
+        except Exception:
+            pass
         try:
-            if conn: conn.close()
-        except Exception: pass
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
     for r in rows:
-        device_name = str(r.get("device") if isinstance(r, dict) else (r[1] if len(r) > 1 else "")).strip()
+        device_name = str(
+            r.get("device") if isinstance(r, dict) else (r[1] if len(r) > 1 else "")
+        ).strip()
         start_time = r.get("start_time") if isinstance(r, dict) else r[0]
 
         if device_name and find_tab_for_focus(device_name, [tab]):
@@ -1098,7 +1174,6 @@ def _fmt_time_only(val) -> str:
     if hasattr(val, "strftime"):  # Gère datetime.time
         return val.strftime("%H:%M")
     s = str(val).strip()
-    # Si string "YYYY-MM-DD HH:MM:SS" ou "HH:MM:SS" ou timedelta
     m = re.search(r"(\d{2}:\d{2})", s)
     if m:
         return m.group(1)
@@ -1126,7 +1201,7 @@ def _fetch_machine_schedule_today(tab_name):
     cfg = get_aria_mysql_config()
 
     sql = """
-        SELECT 
+        SELECT
             a.start_scheduled_period AS start_time,
             a.end_scheduled_period AS end_time,
             COALESCE(a.device, '') AS device,
@@ -1151,13 +1226,16 @@ def _fetch_machine_schedule_today(tab_name):
         rows = cursor.fetchall() or []
     finally:
         try:
-            if cursor: cursor.close()
-        except: pass
+            if cursor:
+                cursor.close()
+        except Exception:
+            pass
         try:
-            if conn: conn.close()
-        except: pass
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
-    tab_kw = _get_tab_keywords(tab)
     raw_entries = []
 
     for r in rows:
@@ -1186,7 +1264,7 @@ def _fetch_machine_schedule_today(tab_name):
         is_cq = _is_cq_patient_activity(service) or "cq" in patient.lower()
 
         entry = {
-            "device": device_name,  # On mémorise la vraie machine
+            "device": device_name,
             "patient_key": str(patient_db_id) if patient_db_id else patient,
             "patient": patient,
             "start": start_str,
@@ -1203,7 +1281,15 @@ def _fetch_machine_schedule_today(tab_name):
             break
 
     # Fusion par patient ET par machine
-    status_priority = {"in-progress": 3, "inprogress": 3, "arrived": 3, "booked": 2, "ready": 2, "completed": 1, "done": 1}
+    status_priority = {
+        "in-progress": 3,
+        "inprogress": 3,
+        "arrived": 3,
+        "booked": 2,
+        "ready": 2,
+        "completed": 1,
+        "done": 1,
+    }
     merged = {}
     order = []
 
@@ -1224,36 +1310,43 @@ def _fetch_machine_schedule_today(tab_name):
             order.append(key)
         else:
             m = merged[key]
-            if e["start"] and (not m["start"] or e["start"] < m["start"]): m["start"] = e["start"]
-            if e["end"] and (not m["end"] or e["end"] > m["end"]): m["end"] = e["end"]
-            if e["service"] and e["service"] not in m["services"]: m["services"].append(e["service"])
+            if e["start"] and (not m["start"] or e["start"] < m["start"]):
+                m["start"] = e["start"]
+            if e["end"] and (not m["end"] or e["end"] > m["end"]):
+                m["end"] = e["end"]
+            if e["service"] and e["service"] not in m["services"]:
+                m["services"].append(e["service"])
             p = status_priority.get(e["status"], 0)
             if p > m["_status_priority"]:
                 m["status"] = e["status"]
                 m["_status_priority"] = p
             m["is_cq"] = m["is_cq"] or e["is_cq"]
-            if e["end_of_day"]: m["end_of_day"] = True
+            if e["end_of_day"]:
+                m["end_of_day"] = True
 
     schedule = []
     for key in order:
         m = merged[key]
         service_joined = " / ".join(m["services"])
-        schedule.append({
-            "device": m["device"], # Ajout de la machine pour le JS
-            "start": m["start"],
-            "end": m["end"],
-            "start_time": m["start"],
-            "end_time": m["end"],
-            "patient": m["patient"],
-            "patient_name": m["patient"],
-            "service": service_joined,
-            "service_type": service_joined,
-            "status": m["status"],
-            "is_cq": m["is_cq"],
-            "end_of_day": m["end_of_day"],
-        })
+        schedule.append(
+            {
+                "device": m["device"],
+                "start": m["start"],
+                "end": m["end"],
+                "start_time": m["start"],
+                "end_time": m["end"],
+                "patient": m["patient"],
+                "patient_name": m["patient"],
+                "service": service_joined,
+                "service_type": service_joined,
+                "status": m["status"],
+                "is_cq": m["is_cq"],
+                "end_of_day": m["end_of_day"],
+            }
+        )
 
     return schedule
+
 
 def build_dashboard_data(tab_name=None) -> dict:
     global _LAST_SCAN_TIME
@@ -1274,6 +1367,8 @@ def build_dashboard_data(tab_name=None) -> dict:
     except ValueError:
         scan_interval_min = 3
 
+    scandidos_sig = settings.get("SCANDIDOS_SIGNATURE", "114358")
+
     # ---------------------------------------------------------------
     # GESTION DES SCANS RÉSEAU (Synchrone si 0 ligne, Asynchrone ensuite)
     # ---------------------------------------------------------------
@@ -1291,6 +1386,21 @@ def build_dashboard_data(tab_name=None) -> dict:
 
     tabs = CQTab.query.order_by(CQTab.display_order).all()
     machines = CQMachine.query.order_by(CQMachine.display_order).all()
+
+    # Déterminer l'onglet actif et son phantom (matériel CQ)
+    current_tab = None
+    if tab_name:
+        for t in tabs:
+            if t.label == tab_name or t.name == tab_name:
+                current_tab = t
+                break
+    if not current_tab and tabs:
+        current_tab = tabs[0]
+
+    current_phantom = ""
+    if current_tab:
+        cfg = current_tab._get_config() if hasattr(current_tab, "_get_config") else {}
+        current_phantom = str(cfg.get("phantom", "") or "").strip()
 
     # Programme du jour (Timeplanner)
     timeplanner_ipps = _fetch_timeplanner_cq_ipps_today(tabs)
@@ -1340,11 +1450,10 @@ def build_dashboard_data(tab_name=None) -> dict:
             continue
 
         rules = find_technique_rules(display_focus, machines)
-        
+
         default_energy = ""
         if hasattr(matched_tab, "get_default_energy"):
             default_energy = matched_tab.get_default_energy() or ""
-        # sinon éventuel champ config libre
         if not default_energy and hasattr(matched_tab, "_get_config"):
             default_energy = (matched_tab._get_config() or {}).get("default_energy", "") or ""
 
@@ -1358,8 +1467,18 @@ def build_dashboard_data(tab_name=None) -> dict:
         full_path = _full_path_from_scans(scans, fallback="") if scans else ""
         detected_energy = _energy_from_scans(scans, fallback=default_energy)
 
+        # ------------------------------------------------------------------
+        # EXTRACTION SCANDIDOS — UNIQUEMENT pour les patients AFFICHÉS
+        # et UNIQUEMENT si le matériel de l'onglet est Delta 4
+        # ------------------------------------------------------------------
+        delta4_dur, delta4_frac = None, None
+        matched_cfg = matched_tab._get_config() if hasattr(matched_tab, "_get_config") else {}
+        matched_phantom = str(matched_cfg.get("phantom", "") or "").strip()
+        if matched_phantom.lower().startswith("delta") and full_path and full_path != "-":
+            delta4_frac, delta4_dur = read_delta4_scandidos(full_path, scandidos_sig)
+
         tp_device = timeplanner_ipps.get(clean_ipp_val) or timeplanner_ipps.get(ipp)
-        
+
         if tp_device:
             timeplanner_icon = (
                 f'<i class="fa-solid fa-calendar-check text-emerald-500 text-base" '
@@ -1399,7 +1518,7 @@ def build_dashboard_data(tab_name=None) -> dict:
             "localisation": localisation if localisation else "Non spécifié",
             "ext_status": ext_status,
             "folder": folder_name,
-            "full_path": full_path, 
+            "full_path": full_path,
             "met_date": _fmt_dt(scheduled),
             "met_color": met_color,
             "raw_met_date": raw_met_date_str,
@@ -1409,6 +1528,8 @@ def build_dashboard_data(tab_name=None) -> dict:
             "tech_name": rules.get("technique_name") or "",
             "base_duration": rules["acquisition"],
             "mount_duration": rules["mount_unmount"],
+            "delta4_duration": delta4_dur,
+            "delta4_fraction": delta4_frac,
             "timeplanner": timeplanner_icon,
             "status": status,
             "comment": comment or "",
@@ -1430,7 +1551,6 @@ def build_dashboard_data(tab_name=None) -> dict:
     next_slot_dt = _fetch_next_cq_slot(tab_name)
     next_slot_str = _fmt_time_only(next_slot_dt) if next_slot_dt else None
 
-    # === AJOUT DU PLANNING DU JOUR ===
     machine_schedule = _fetch_machine_schedule_today(tab_name)
 
     return {
@@ -1441,4 +1561,5 @@ def build_dashboard_data(tab_name=None) -> dict:
         "scan_interval_min": scan_interval_min,
         "next_cq_slot": next_slot_str,
         "machine_schedule": machine_schedule,
+        "phantom": current_phantom,
     }
