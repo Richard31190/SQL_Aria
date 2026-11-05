@@ -641,17 +641,25 @@ def _is_cq_ready_task(display_focus: str, status: str) -> bool:
     norm_f = normalize(display_focus)
     norm_s = normalize(status)
 
+    # 1. Vérification du statut ARIA
     if norm_s not in ("ready", "inprogress", "in-progress", "booked", "arrived"):
         return False
+
+    # 2. Exclusion explicite des tâches de création, préparation ou planification initiale
+    if "creation" in norm_f or "preparation" in norm_f:
+        return False
+
+    # 3. Tâches de réalisation effectives
     if ("realisation" in norm_f and "cq" in norm_f) or ("replanif" in norm_f):
         return True
+
+    # 4. Tâches CQ spécifiques (ex: CQ Patient, CQ Ruby, etc.) hors création
     if "cq" in norm_f and any(
         k in norm_f for k in ("patient", "ruby", "octa", "tomo", "hyperarc")
     ):
         return True
 
     return False
-
 
 def _fetch_aria_activity_rows(lookback_days: int) -> list:
     query = """
