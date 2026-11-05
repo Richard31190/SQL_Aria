@@ -1095,7 +1095,15 @@ def _fmt_time_only(val) -> str:
 def _fetch_machine_schedule_today(tab_name):
     """
     Récupère le planning complet du jour pour la machine ciblée.
-    Totalement dynamique et basé sur les mots-clés configurés en Administration.
+
+    Règles métier appliquées :
+    - Fusion des lignes d'un même patient : on conserve l'heure de début
+      la plus tôt et l'heure de fin la plus tardive, et on concatène
+      les services distincts.
+    - Une ligne dont le service contient "PAS DE SEANCE" est ignorée.
+    - Une ligne dont le service contient "Implant" marque la fin de la
+      journée : elle est affichée, puis plus aucune ligne postérieure
+      n'est affichée.
     """
     if not tab_name:
         return []
@@ -1125,7 +1133,8 @@ def _fetch_machine_schedule_today(tab_name):
             COALESCE(p.family_name_official, '') AS last_name,
             COALESCE(p.given, '') AS first_name,
             COALESCE(a.service_type, '') AS service_type,
-            COALESCE(a.status, '') AS status
+            COALESCE(a.status, '') AS status,
+            p.id AS patient_db_id
         FROM appointments a
         JOIN patients p ON a.patient_id = p.id
         WHERE a.start_scheduled_period >= CURDATE()
@@ -1155,10 +1164,13 @@ def _fetch_machine_schedule_today(tab_name):
         except Exception:
             pass
 
-    schedule = []
     tab_kw = _get_tab_keywords(tab)
     devices_seen_today = set()
+    raw_entries = []
 
+    # ---------------------------------------------------------------
+    # 1) Filtrage machine + règle "PAS DE SEANCE" + arrêt sur "Implant"
+    # ---------------------------------------------------------------
     for r in rows:
         if isinstance(r, dict):
             device_name = str(r.get("device") or "").strip()
@@ -1167,40 +1179,116 @@ def _fetch_machine_schedule_today(tab_name):
             patient = f"{r.get('last_name', '')} {r.get('first_name', '')}".strip()
             service = str(r.get("service_type") or "")
             status = str(r.get("status") or "")
+            patient_db_id = r.get("patient_db_id")
         else:
-            start_time, end_time, device_name, last_name, first_name, service, status = r
+            start_time, end_time, device_name, last_name, first_name, service, status, patient_db_id = r
             device_name = str(device_name or "").strip()
             patient = f"{last_name} {first_name}".strip()
 
         if device_name:
             devices_seen_today.add(device_name)
 
-        if device_name and find_tab_for_focus(device_name, [tab]):
-            start_str = _fmt_time_only(start_time)
-            end_str = _fmt_time_only(end_time)
-            is_cq = _is_cq_patient_activity(service) or "cq" in patient.lower()
+        # Rendez-vous d'une autre machine → ignoré
+        if not device_name or not find_tab_for_focus(device_name, [tab]):
+            continue
 
-            # Double alias des clés pour être compatible avec n'importe quel script JS
-            schedule.append({
-                "start": start_str,
-                "end": end_str,
-                "start_time": start_str,
-                "end_time": end_str,
-                "patient": patient,
-                "patient_name": patient,
-                "service": service,
-                "service_type": service,
-                "status": status.lower(),
-                "is_cq": is_cq,
-            })
+        service_norm = normalize(service)
 
-    print(f"[Planning] Onglet '{tab.label}' (Mots-clés Admin: {tab_kw}) : {len(schedule)} RDV trouvé(s) sur {len(rows)} au total.")
-    if rows and not schedule:
+        # Règle : "PAS DE SEANCE" → le patient n'est pas affiché
+        if "pasdeseance" in service_norm:
+            continue
+
+        start_str = _fmt_time_only(start_time)
+        end_str = _fmt_time_only(end_time)
+        is_cq = _is_cq_patient_activity(service) or "cq" in patient.lower()
+
+        entry = {
+            "patient_key": str(patient_db_id) if patient_db_id else (patient or f"__row_{len(raw_entries)}"),
+            "patient": patient,
+            "start": start_str,
+            "end": end_str,
+            "service": service,
+            "status": status.lower(),
+            "is_cq": is_cq,
+            "end_of_day": False,
+        }
+        raw_entries.append(entry)
+
+        # Règle : "Implant" = fin de journée → on affiche la ligne puis on stoppe
+        if "implant" in service_norm:
+            entry["end_of_day"] = True
+            break
+
+    # ---------------------------------------------------------------
+    # 2) Fusion des lignes d'un même patient
+    # ---------------------------------------------------------------
+    status_priority = {
+        "in-progress": 3, "inprogress": 3, "arrived": 3,
+        "booked": 2, "ready": 2,
+        "completed": 1, "done": 1,
+    }
+
+    merged = {}
+    order = []
+
+    for e in raw_entries:
+        key = e["patient_key"]
+        if key not in merged:
+            merged[key] = {
+                "start": e["start"],
+                "end": e["end"],
+                "patient": e["patient"],
+                "services": [e["service"]] if e["service"] else [],
+                "status": e["status"],
+                "_status_priority": status_priority.get(e["status"], 0),
+                "is_cq": e["is_cq"],
+                "end_of_day": e["end_of_day"],
+            }
+            order.append(key)
+        else:
+            m = merged[key]
+            if e["start"] and (not m["start"] or e["start"] < m["start"]):
+                m["start"] = e["start"]
+            if e["end"] and (not m["end"] or e["end"] > m["end"]):
+                m["end"] = e["end"]
+            if e["service"] and e["service"] not in m["services"]:
+                m["services"].append(e["service"])
+            p = status_priority.get(e["status"], 0)
+            if p > m["_status_priority"]:
+                m["status"] = e["status"]
+                m["_status_priority"] = p
+            m["is_cq"] = m["is_cq"] or e["is_cq"]
+            if e["end_of_day"]:
+                m["end_of_day"] = True
+
+    schedule = []
+    for key in order:
+        m = merged[key]
+        service_joined = " / ".join(m["services"])
+        schedule.append({
+            "start": m["start"],
+            "end": m["end"],
+            "start_time": m["start"],
+            "end_time": m["end"],
+            "patient": m["patient"],
+            "patient_name": m["patient"],
+            "service": service_joined,
+            "service_type": service_joined,
+            "status": m["status"],
+            "is_cq": m["is_cq"],
+            "end_of_day": m["end_of_day"],
+        })
+
+    print(
+        f"[Planning] Onglet '{tab.label}' (Mots-clés Admin: {tab_kw}) : "
+        f"{len(schedule)} RDV affiché(s) après fusion "
+        f"(sur {len(raw_entries)} ligne(s) retenue(s), {len(rows)} au total)."
+    )
+    if rows and not raw_entries:
         print(f"[Planning Diagnostic] Noms de machines présent(e)s aujourd'hui dans ARIA : {list(devices_seen_today)}.")
         print(f"--> Pour afficher le planning, vérifiez qu'un de ces noms figure bien dans la liste des mots-clés de l'onglet '{tab.label}' sur la page Administration.")
 
     return schedule
-
 
 def build_dashboard_data(tab_name=None) -> dict:
     global _LAST_SCAN_TIME
