@@ -1,4 +1,5 @@
 <!-- templates\dashboard.html -->
+<!-- templates/dashboard.html -->
 {% extends 'base.html' %}
 
 {% block content %}
@@ -30,6 +31,14 @@
                        class="w-full pl-9 pr-4 py-2 rounded-lg text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:ring-2 focus:ring-cyan-500 text-slate-900 dark:text-slate-100">
                 <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-sm"></i>
             </div>
+
+            <!-- BOUTON PLANNING -->
+            <button onclick="openScheduleModal()"
+                    class="inline-flex items-center gap-2 px-3 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 active:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 rounded-lg shadow-sm transition-all border border-slate-300 dark:border-slate-700"
+                    title="Voir le planning ARIA du jour pour cette machine">
+                <i class="fa-solid fa-calendar-day text-indigo-500"></i>
+                <span class="hidden sm:inline">Planning</span>
+            </button>
 
             <!-- Bouton de rafraîchissement avec icône animée - SCAN RÉSEAU -->
             <button id="btn-refresh-scan"
@@ -65,7 +74,17 @@
             </table>
         </div>
 
-        <div class="p-4 bg-slate-50 dark:bg-slate-900/80 border-t border-slate-200 dark:border-slate-700 flex justify-end items-center">
+        <!-- Footer : Prochain Créneau + Temps Estimé -->
+        <div class="p-4 bg-slate-50 dark:bg-slate-900/80 border-t border-slate-200 dark:border-slate-700 flex justify-end items-center gap-4">
+
+            <!-- Badge Prochain créneau CQ (masqué par défaut si aucun créneau) -->
+            <div id="next-cq-slot-container" class="hidden flex items-center gap-2 px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg border border-indigo-200 shadow-sm text-sm font-medium transition-all">
+                <i class="fa-regular fa-clock fa-spin-pulse" style="--fa-animation-duration: 3s;"></i>
+                <span>Prochain créneau CQ :</span>
+                <span id="next-cq-slot-time" class="font-bold text-indigo-900"></span>
+            </div>
+
+            <!-- Temps estimé -->
             <div class="text-sm font-bold text-slate-700 dark:text-slate-300 flex items-center">
                 <i class="fa-solid fa-stopwatch text-cyan-500 text-lg mr-2"></i>
                 Temps estimé (patients cochés) :
@@ -73,6 +92,7 @@
                     0 min
                 </span>
             </div>
+
         </div>
     </div>
 
@@ -106,6 +126,41 @@
     </div>
 
 </div>
+
+<!-- MODAL PLANNING MACHINE -->
+<div id="schedule-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-slate-900/50 backdrop-blur-sm transition-opacity">
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl max-w-4xl w-full mx-4 flex flex-col max-h-[85vh] overflow-hidden border border-slate-200 dark:border-slate-700">
+
+        <!-- Header -->
+        <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center bg-slate-50 dark:bg-slate-900/50">
+            <h2 class="text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                <i class="fa-solid fa-calendar-day text-indigo-500"></i>
+                Planning du jour : <span id="schedule-machine-name" class="text-indigo-600 dark:text-indigo-400"></span>
+            </h2>
+            <button onclick="closeScheduleModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors">
+                <i class="fa-solid fa-xmark text-xl"></i>
+            </button>
+        </div>
+
+        <!-- Content -->
+        <div class="p-0 overflow-y-auto flex-1">
+            <table class="w-full text-sm text-left border-collapse">
+                <thead class="bg-slate-100 dark:bg-slate-900/80 text-slate-600 dark:text-slate-400 uppercase tracking-wider text-xs sticky top-0 z-10 shadow-sm">
+                    <tr>
+                        <th class="px-6 py-3 border-b border-slate-200 dark:border-slate-700 w-1/5">Horaire</th>
+                        <th class="px-6 py-3 border-b border-slate-200 dark:border-slate-700 w-1/3">Patient</th>
+                        <th class="px-6 py-3 border-b border-slate-200 dark:border-slate-700 w-1/4">Service</th>
+                        <th class="px-6 py-3 border-b border-slate-200 dark:border-slate-700">Statut</th>
+                    </tr>
+                </thead>
+                <tbody id="schedule-modal-body" class="divide-y divide-slate-100 dark:divide-slate-700/50">
+                    <!-- Rempli par JS -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -117,11 +172,11 @@
     }
 
     let configuredExtensions = {{ configured_extensions|default([])|tojson }};
-
-    // MÉMOIRE DES CASES DÉCOCHÉES (Conservée lors des rafraîchissements AJAX 60s)
     let uncheckedRows = new Set();
-
     const FIXED_COLS_BEFORE = 5;
+
+    // Mémorise le dernier planning chargé
+    let currentMachineSchedule = [];
 
     function buildThead(exts) {
         const theadRow = document.getElementById('dashboard-table-head');
@@ -183,12 +238,24 @@
                 if (Array.isArray(data.configured_extensions) && data.configured_extensions.length) {
                     configuredExtensions = data.configured_extensions;
                 }
+
+                // Mémorisation du planning pour la modale
+                currentMachineSchedule = data.machine_schedule || [];
+
                 buildThead(configuredExtensions);
                 renderTable(data.main_rows || []);
                 renderPrepTable(data.prep_rows || []);
                 renderMiniCalendar(data.main_rows || []);
 
-                // Réglage du scan automatique selon Admin
+                const slotContainer = document.getElementById('next-cq-slot-container');
+                const slotTime = document.getElementById('next-cq-slot-time');
+                if (data.next_cq_slot) {
+                    slotTime.innerText = data.next_cq_slot;
+                    slotContainer.classList.remove('hidden');
+                } else {
+                    slotContainer.classList.add('hidden');
+                }
+
                 if (data.scan_interval_min !== undefined) {
                     scheduleBackgroundScan(data.scan_interval_min);
                 }
@@ -238,7 +305,6 @@
             const isChecked = !uncheckedRows.has(rowKey);
             if (!isChecked) allChecked = false;
 
-            // Affichage = libellé complet | Calcul montage = nom Admin court
             const techniqueLabel = r.technique || r.tech_name || '';
             const techniqueKey = r.tech_name || r.technique || '';
             const safeTitle = String(techniqueLabel).replace(/"/g, '&quot;');
@@ -279,22 +345,17 @@
         calculateTime();
     }
 
-    // LISTENER CHECKBOX DÉLÉGUÉ (Mise à jour de la mémoire)
     const tableBody = document.getElementById('dashboard-table-body');
     if (tableBody) {
         tableBody.addEventListener('change', function (e) {
             if (e.target && e.target.classList.contains('row-checkbox')) {
                 const key = e.target.getAttribute('data-key');
-                if (e.target.checked) {
-                    uncheckedRows.delete(key);
-                } else {
-                    uncheckedRows.add(key);
-                }
+                if (e.target.checked) uncheckedRows.delete(key);
+                else uncheckedRows.add(key);
 
                 const checkAll = document.getElementById('check-all');
-                if (!e.target.checked && checkAll) {
-                    checkAll.checked = false;
-                } else if (checkAll) {
+                if (!e.target.checked && checkAll) checkAll.checked = false;
+                else if (checkAll) {
                     const allC = Array.from(document.querySelectorAll('.row-checkbox')).every(cb => cb.checked);
                     checkAll.checked = allC;
                 }
@@ -354,6 +415,84 @@
             tbody.appendChild(tr);
         });
     }
+
+    // GESTION DE LA MODALE DU PLANNING
+    function renderScheduleModal() {
+        const tbody = document.getElementById('schedule-modal-body');
+        if (!tbody) return;
+
+        if (!currentMachineSchedule || currentMachineSchedule.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="4" class="px-6 py-8 text-center text-slate-500 italic text-sm">Aucun rendez-vous prévu aujourd'hui sur cette machine.</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = currentMachineSchedule.map(appt => {
+            const startStr = appt.start || appt.start_time || '—';
+            const endStr = appt.end || appt.end_time || '—';
+            const patientStr = appt.patient || appt.patient_name || 'Patient anonyme';
+            const serviceStr = appt.service || appt.service_type || '—';
+            const statusStr = (appt.status || 'ready').toLowerCase();
+            const isCQ = appt.is_cq || serviceStr.toLowerCase().includes('cq') || patientStr.toLowerCase().includes('cq');
+
+            let statusClass = "bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300";
+            let statusLabel = statusStr;
+
+            if (statusStr.includes('completed') || statusStr.includes('done')) {
+                statusClass = "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300";
+                statusLabel = "Terminé";
+            } else if (statusStr.includes('in-progress') || statusStr.includes('inprogress') || statusStr.includes('arrived')) {
+                statusClass = "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300";
+                statusLabel = "En cours / Arrivé";
+            } else if (statusStr.includes('booked') || statusStr.includes('ready')) {
+                statusClass = "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-300";
+                statusLabel = "Programmé";
+            }
+
+            const rowClass = isCQ
+                ? "bg-amber-500/10 dark:bg-amber-500/20 font-semibold border-l-4 border-l-amber-500"
+                : "hover:bg-slate-50 dark:hover:bg-slate-800/50";
+
+            return `
+                <tr class="transition-colors border-b border-slate-100 dark:border-slate-700/50 ${rowClass}">
+                    <td class="px-6 py-3 whitespace-nowrap text-slate-900 dark:text-slate-200 font-mono text-sm">
+                        ${startStr} <span class="text-slate-400 mx-1">-</span> ${endStr}
+                    </td>
+                    <td class="px-6 py-3 text-slate-800 dark:text-slate-200 text-sm font-medium">
+                        ${patientStr}
+                    </td>
+                    <td class="px-6 py-3 text-slate-600 dark:text-slate-400 text-sm capitalize">
+                        ${serviceStr}
+                    </td>
+                    <td class="px-6 py-3">
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${statusClass}">
+                            ${statusLabel}
+                        </span>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function openScheduleModal() {
+        const titleSpan = document.getElementById('schedule-machine-name');
+        if (titleSpan) titleSpan.innerText = activeTab;
+
+        renderScheduleModal();
+
+        const modal = document.getElementById('schedule-modal');
+        if (modal) modal.classList.remove('hidden');
+    }
+
+    function closeScheduleModal() {
+        const modal = document.getElementById('schedule-modal');
+        if (modal) modal.classList.add('hidden');
+    }
+
+    // Fermer la modale si on clique en dehors
+    document.getElementById('schedule-modal')?.addEventListener('click', function(e) {
+        if (e.target === this) closeScheduleModal();
+    });
+
 
     // DESSINER LE MINI-CALENDRIER DANS LA SIDEBAR
     let calViewYear = new Date().getFullYear();
@@ -516,7 +655,6 @@
         });
     }
 
-    // DECLENCHEUR ANIMÉ - SCAN RÉSEAU IUCT
     function triggerManualScan() {
         const btn = document.getElementById('btn-refresh-scan');
         const icon = document.getElementById('icon-refresh-scan');
@@ -531,12 +669,8 @@
 
         fetch('/api/scan', { method: 'POST' })
             .then(res => res.json())
-            .then(data => {
-                return loadData();
-            })
-            .catch(err => {
-                console.error("Erreur lors du scan réseau :", err);
-            })
+            .then(data => loadData())
+            .catch(err => console.error("Erreur scan réseau:", err))
             .finally(() => {
                 setTimeout(() => {
                     btn.disabled = false;
@@ -547,7 +681,6 @@
             });
     }
 
-    // DECLENCHEUR ANIMÉ - ACTUALISATION ARIA
     async function triggerAriaRefresh() {
         const btn = document.getElementById('refresh-btn');
         const icon = document.getElementById('icon-aria-refresh');
@@ -555,35 +688,27 @@
 
         if (!btn || !icon) return;
 
-        // 1. Activer l'état de chargement
         btn.disabled = true;
         btn.classList.add('opacity-75', 'cursor-not-allowed');
         icon.classList.add('fa-spin');
 
         const originalText = text ? text.innerText : 'ARIA';
-        if (text) {
-            text.innerText = 'Actualisation ARIA...';
-        }
+        if (text) text.innerText = 'Actualisation ARIA...';
 
         try {
-            // 2. Recharger les données du tableau
             await loadData();
         } catch (error) {
-            console.error("Erreur lors du rafraîchissement ARIA:", error);
+            console.error("Erreur rafraîchissement ARIA:", error);
         } finally {
-            // 3. Restaurer l'état initial (avec un petit délai pour la fluidité visuelle)
             setTimeout(() => {
                 btn.disabled = false;
                 btn.classList.remove('opacity-75', 'cursor-not-allowed');
                 icon.classList.remove('fa-spin');
-                if (text) {
-                    text.innerText = originalText;
-                }
+                if (text) text.innerText = originalText;
             }, 500);
         }
     }
 
-    // FILTRE DE RECHERCHE EN TEMPS RÉEL
     const searchInput = document.getElementById('search-input');
     if (searchInput) {
         searchInput.addEventListener('input', function () {
@@ -600,9 +725,7 @@
     loadData();
     setInterval(loadData, 60000);
 
-    // TIMER DE SCAN RÉSEAU EN TÂCHE DE FOND
     let backgroundScanTimer = null;
-
     function scheduleBackgroundScan(minutes) {
         if (backgroundScanTimer) clearInterval(backgroundScanTimer);
         const mins = parseInt(minutes) || 3;
@@ -611,9 +734,7 @@
                 fetch('/api/scan', { method: 'POST' })
                     .then(res => res.json())
                     .then(res => {
-                        if (res.found_new !== undefined) {
-                            loadData();
-                        }
+                        if (res.found_new !== undefined) loadData();
                     })
                     .catch(err => console.error('Scan fond erreur:', err));
             }, mins * 60000);

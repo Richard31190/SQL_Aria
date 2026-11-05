@@ -1,4 +1,4 @@
-# *** services/business.py ***
+### 1. Fichier : `app/services/business.py`
 # -*- coding: utf-8 -*-
 """
 CQ Dashboard — Logique Métier Précise & Filtrée
@@ -16,6 +16,8 @@ import threading
 import unicodedata
 from datetime import datetime, date, timedelta
 from collections import defaultdict
+from sqlalchemy import text
+from flask import current_app
 
 from app.models_local import db_local, CQTab, CQMachine, ScanCache, Setting
 
@@ -247,6 +249,40 @@ def find_tab_for_focus(focus_text: str, tabs: list):
                 return tab
     return None
 
+def _get_tab_keywords(tab) -> list:
+    """Extrait tous les mots-clés d'un CQTab pour le matching ARIA (device)."""
+    if not tab:
+        return []
+    kws = []
+    seen = set()
+
+    if hasattr(tab, "get_aria_keywords"):
+        for k in (tab.get_aria_keywords() or []):
+            k = (k or "").strip()
+            if k and k.lower() not in seen:
+                seen.add(k.lower())
+                kws.append(k)
+
+    if hasattr(tab, "get_keywords"):
+        for k in (tab.get_keywords() or []):
+            k = (k or "").strip()
+            if k and k.lower() not in seen:
+                seen.add(k.lower())
+                kws.append(k)
+
+    raw_name = getattr(tab, "name", None) or ""
+    for k in str(raw_name).split(","):
+        k = k.strip()
+        if k and k.lower() not in seen:
+            seen.add(k.lower())
+            kws.append(k)
+
+    lab = (getattr(tab, "label", None) or "").strip()
+    if lab and lab.lower() not in seen:
+        seen.add(lab.lower())
+        kws.append(lab)
+
+    return kws
 
 def find_technique_rules(task_text: str, machines: list) -> dict:
     full_text = (task_text or "").strip()
@@ -704,9 +740,9 @@ def _is_cq_patient_activity(text: str) -> bool:
 
 
 def _fetch_timeplanner_cq_ipps_today(tabs: list) -> set:
+    """IPP patients avec RDV CQ aujourd'hui — matching machine via appointments.device."""
     cfg = get_aria_mysql_config()
     ipps = set()
-
     queries = [
         """
         SELECT
@@ -714,7 +750,7 @@ def _fetch_timeplanner_cq_ipps_today(tabs: list) -> set:
             COALESCE(a.service_type, '')        AS service_type,
             COALESCE(a.status, '')              AS status,
             COALESCE(a.notes, '')               AS notes,
-            COALESCE(a.resource_name, '')       AS resource_name
+            COALESCE(a.device, '')              AS device
         FROM appointments a
         JOIN patients p ON a.patient_id = p.id
         WHERE DATE(a.start_scheduled_period) = CURDATE()
@@ -726,19 +762,7 @@ def _fetch_timeplanner_cq_ipps_today(tabs: list) -> set:
             COALESCE(a.service_type, '')        AS service_type,
             COALESCE(a.status, '')              AS status,
             ''                                  AS notes,
-            COALESCE(a.resource_name, '')       AS resource_name
-        FROM appointments a
-        JOIN patients p ON a.patient_id = p.id
-        WHERE DATE(a.start_scheduled_period) = CURDATE()
-          AND LOWER(COALESCE(a.status, '')) NOT IN ('cancelled', 'canceled', 'deleted', 'noshow')
-        """,
-        """
-        SELECT
-            COALESCE(p.ipp, CAST(p.id AS CHAR)) AS ipp,
-            COALESCE(a.service_type, '')        AS service_type,
-            COALESCE(a.status, '')              AS status,
-            ''                                  AS notes,
-            ''                                  AS resource_name
+            COALESCE(a.device, '')              AS device
         FROM appointments a
         JOIN patients p ON a.patient_id = p.id
         WHERE DATE(a.start_scheduled_period) = CURDATE()
@@ -758,23 +782,17 @@ def _fetch_timeplanner_cq_ipps_today(tabs: list) -> set:
             except Exception:
                 rows = []
                 continue
-    except Exception as e:
-        print(f"[ARIA MySQL] Timeplanner connect: {e}")
-        return ipps
 
-    try:
         for r in rows:
             service = str(r.get("service_type") or "")
             notes = str(r.get("notes") or "")
-            resource = str(r.get("resource_name") or "")
+            device = str(r.get("device") or "")
 
-            blob = f"{service} {notes}".strip()
-            if not _is_cq_patient_activity(blob):
+            if not _is_cq_patient_activity(f"{service} {notes}".strip()):
                 continue
 
-            if resource and tabs:
-                matched_tab = find_tab_for_focus(resource, tabs)
-                if matched_tab is None:
+            if device and tabs:
+                if find_tab_for_focus(device, tabs) is None:
                     continue
 
             ipp = _clean_ipp(str(r.get("ipp") or "").strip())
@@ -784,7 +802,7 @@ def _fetch_timeplanner_cq_ipps_today(tabs: list) -> set:
         print(f"[Timeplanner] {len(ipps)} patient(s) CQ programmé(s) aujourd'hui")
         return ipps
     except Exception as e:
-        print(f"[ARIA MySQL] Erreur Timeplanner parse : {e}")
+        print(f"[ARIA MySQL] Erreur Timeplanner : {e}")
         return set()
     finally:
         try:
@@ -828,14 +846,7 @@ def _find_tab_for_workflow(workflow: str, tabs: list):
     if not tabs:
         return None
     matched = find_tab_for_focus(workflow or "", tabs)
-    if matched:
-        return matched
-    for t in tabs:
-        label_n = normalize(t.label or "")
-        name_n = normalize(getattr(t, "name", "") or "")
-        if "nova" in label_n or "nova" in name_n:
-            return t
-    return None
+    return matched  
 
 
 def _fetch_imminent_prep_rows(lookback_days: int, tabs: list) -> list:
@@ -999,6 +1010,190 @@ def _fetch_imminent_prep_rows(lookback_days: int, tabs: list) -> list:
 # Point d'entrée Dashboard
 # ===========================================================================
 
+def _fetch_next_cq_slot(tab_name):
+    """
+    Récupère l'heure du prochain créneau de CQ physique/patient pour la machine ciblée.
+    Totalement dynamique : se base sur la configuration des onglets enregistrée en Administration.
+    """
+    if not tab_name:
+        return None
+
+    tab = CQTab.query.filter_by(label=tab_name).first()
+    if not tab:
+        return None
+
+    cfg = get_aria_mysql_config()
+
+    # Structure exacte vérifiée : appointments.device, appointments.start_scheduled_period
+    sql = """
+        SELECT 
+            a.start_scheduled_period AS start_time,
+            COALESCE(a.device, '') AS device
+        FROM appointments a
+        JOIN patients p ON a.patient_id = p.id
+        WHERE a.start_scheduled_period >= NOW()
+          AND a.start_scheduled_period < CURDATE() + INTERVAL 1 DAY
+          AND (
+              p.family_name_official LIKE '%CQ HEBDOMADAIRE%' 
+              OR p.id = 3
+          )
+          AND LOWER(COALESCE(a.status, '')) IN ('booked', 'arrived')
+        ORDER BY a.start_scheduled_period ASC
+    """
+
+    conn = cursor = None
+    rows = []
+    try:
+        conn, cursor = get_mysql_connection(cfg)
+        cursor.execute(sql)
+        rows = cursor.fetchall() or []
+    except Exception as e:
+        print(f"[ARIA MySQL] Erreur créneau CQ : {e}")
+        return None
+    finally:
+        try:
+            if cursor: cursor.close()
+        except Exception: pass
+        try:
+            if conn: conn.close()
+        except Exception: pass
+
+    for r in rows:
+        device_name = str(r.get("device") if isinstance(r, dict) else (r[1] if len(r) > 1 else "")).strip()
+        start_time = r.get("start_time") if isinstance(r, dict) else r[0]
+
+        if device_name and find_tab_for_focus(device_name, [tab]):
+            return start_time
+
+    return None
+
+
+def _fmt_time_only(val) -> str:
+    """Formate proprement n'importe quel objet date/time/timedelta/str MySQL en HH:MM."""
+    if not val:
+        return ""
+    if isinstance(val, datetime):
+        return val.strftime("%H:%M")
+    if hasattr(val, "strftime"):  # Gère datetime.time
+        return val.strftime("%H:%M")
+    s = str(val).strip()
+    # Si string "YYYY-MM-DD HH:MM:SS" ou "HH:MM:SS" ou timedelta
+    m = re.search(r"(\d{2}:\d{2})", s)
+    if m:
+        return m.group(1)
+    return s
+
+
+def _fetch_machine_schedule_today(tab_name):
+    """
+    Récupère le planning complet du jour pour la machine ciblée.
+    Totalement dynamique et basé sur les mots-clés configurés en Administration.
+    """
+    if not tab_name:
+        return []
+
+    tabs = CQTab.query.order_by(CQTab.display_order).all()
+    tab = None
+    for t in tabs:
+        if (
+            t.label == tab_name
+            or normalize(t.label) == normalize(tab_name)
+            or normalize(getattr(t, "name", "")) == normalize(tab_name)
+        ):
+            tab = t
+            break
+
+    if not tab:
+        print(f"[Planning] Onglet introuvable pour '{tab_name}'")
+        return []
+
+    cfg = get_aria_mysql_config()
+
+    sql = """
+        SELECT 
+            a.start_scheduled_period AS start_time,
+            a.end_scheduled_period AS end_time,
+            COALESCE(a.device, '') AS device,
+            COALESCE(p.family_name_official, '') AS last_name,
+            COALESCE(p.given, '') AS first_name,
+            COALESCE(a.service_type, '') AS service_type,
+            COALESCE(a.status, '') AS status
+        FROM appointments a
+        JOIN patients p ON a.patient_id = p.id
+        WHERE a.start_scheduled_period >= CURDATE()
+          AND a.start_scheduled_period < CURDATE() + INTERVAL 1 DAY
+          AND LOWER(COALESCE(a.status, '')) NOT IN ('cancelled', 'canceled', 'deleted', 'noshow')
+        ORDER BY a.start_scheduled_period ASC
+    """
+
+    conn = cursor = None
+    rows = []
+    try:
+        conn, cursor = get_mysql_connection(cfg)
+        cursor.execute(sql)
+        rows = cursor.fetchall() or []
+    except Exception as e:
+        print(f"[ARIA MySQL] Erreur planning machine : {e}")
+        return []
+    finally:
+        try:
+            if cursor:
+                cursor.close()
+        except Exception:
+            pass
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+    schedule = []
+    tab_kw = _get_tab_keywords(tab)
+    devices_seen_today = set()
+
+    for r in rows:
+        if isinstance(r, dict):
+            device_name = str(r.get("device") or "").strip()
+            start_time = r.get("start_time")
+            end_time = r.get("end_time")
+            patient = f"{r.get('last_name', '')} {r.get('first_name', '')}".strip()
+            service = str(r.get("service_type") or "")
+            status = str(r.get("status") or "")
+        else:
+            start_time, end_time, device_name, last_name, first_name, service, status = r
+            device_name = str(device_name or "").strip()
+            patient = f"{last_name} {first_name}".strip()
+
+        if device_name:
+            devices_seen_today.add(device_name)
+
+        if device_name and find_tab_for_focus(device_name, [tab]):
+            start_str = _fmt_time_only(start_time)
+            end_str = _fmt_time_only(end_time)
+            is_cq = _is_cq_patient_activity(service) or "cq" in patient.lower()
+
+            # Double alias des clés pour être compatible avec n'importe quel script JS
+            schedule.append({
+                "start": start_str,
+                "end": end_str,
+                "start_time": start_str,
+                "end_time": end_str,
+                "patient": patient,
+                "patient_name": patient,
+                "service": service,
+                "service_type": service,
+                "status": status.lower(),
+                "is_cq": is_cq,
+            })
+
+    print(f"[Planning] Onglet '{tab.label}' (Mots-clés Admin: {tab_kw}) : {len(schedule)} RDV trouvé(s) sur {len(rows)} au total.")
+    if rows and not schedule:
+        print(f"[Planning Diagnostic] Noms de machines présent(e)s aujourd'hui dans ARIA : {list(devices_seen_today)}.")
+        print(f"--> Pour afficher le planning, vérifiez qu'un de ces noms figure bien dans la liste des mots-clés de l'onglet '{tab.label}' sur la page Administration.")
+
+    return schedule
+
+
 def build_dashboard_data(tab_name=None) -> dict:
     global _LAST_SCAN_TIME
 
@@ -1023,10 +1218,8 @@ def build_dashboard_data(tab_name=None) -> dict:
     # ---------------------------------------------------------------
     cache_count = ScanCache.query.count()
     if cache_count == 0:
-        # Premier lancement : on scanne immédiatement avant d'afficher
         perform_network_scan()
     else:
-        # Rafraîchissement : scan non-bloquant en arrière-plan
         if _LAST_SCAN_TIME is None:
             _LAST_SCAN_TIME = datetime.now()
             trigger_async_network_scan()
@@ -1087,12 +1280,12 @@ def build_dashboard_data(tab_name=None) -> dict:
 
         rules = find_technique_rules(display_focus, machines)
         
-        # Détermination énergie par défaut selon la machine ou l'onglet (ex: 6FFF pour Tomo)
         default_energy = ""
         if hasattr(matched_tab, "get_default_energy"):
             default_energy = matched_tab.get_default_energy() or ""
-        if not default_energy and "tomo" in matched_tab.label.lower():
-            default_energy = "6FFF"
+        # sinon éventuel champ config libre
+        if not default_energy and hasattr(matched_tab, "_get_config"):
+            default_energy = (matched_tab._get_config() or {}).get("default_energy", "") or ""
 
         clean_ipp_val = _clean_ipp(ipp)
         scans = scans_by_ipp.get(clean_ipp_val, []) or scans_by_ipp.get(ipp, [])
@@ -1101,11 +1294,8 @@ def build_dashboard_data(tab_name=None) -> dict:
         ext_status = _ext_status_for_scans(scans, exts_for_row)
 
         folder_name = _folder_from_scans(scans, fallback="") if scans else "-"
-
-        # Énergie issue du DICOM ou fallback sur la machine/onglet
         detected_energy = _energy_from_scans(scans, fallback=default_energy)
 
-        # Timeplanner = CQ programmé aujourd'hui
         is_on_timeplanner = clean_ipp_val in timeplanner_ipps or ipp in timeplanner_ipps
 
         timeplanner_icon = (
@@ -1118,7 +1308,6 @@ def build_dashboard_data(tab_name=None) -> dict:
             )
         )
 
-        # MET = urgence + tri
         sort_val = datetime.max
         raw_met_date_str = None
         met_color = (
@@ -1129,24 +1318,14 @@ def build_dashboard_data(tab_name=None) -> dict:
         if scheduled and isinstance(scheduled, datetime):
             sort_val = scheduled
             raw_met_date_str = scheduled.isoformat()
-
             bdays = business_days_between(now, scheduled)
 
             if bdays < 0 or (bdays == 0 and scheduled.date() <= now.date()):
-                met_color = (
-                    "bg-red-50 text-red-900 border-red-200 "
-                    "dark:bg-red-900/30 dark:text-red-300 dark:border-red-900"
-                )
+                met_color = "bg-red-50 text-red-900 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-900"
             elif bdays <= urgency_days:
-                met_color = (
-                    "bg-orange-50 text-orange-900 border-orange-200 "
-                    "dark:bg-orange-900/30 dark:text-orange-300 dark:border-orange-900"
-                )
+                met_color = "bg-orange-50 text-orange-900 border-orange-200 dark:bg-orange-900/30 dark:text-orange-300 dark:border-orange-900"
             else:
-                met_color = (
-                    "bg-emerald-50 text-emerald-900 border-emerald-200 "
-                    "dark:bg-emerald-900/10 dark:text-emerald-300 dark:border-emerald-900"
-                )
+                met_color = "bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-900/10 dark:text-emerald-300 dark:border-emerald-900"
 
         row_unique_key = f"{ipp}_{task_id}"
         main_by_key[row_unique_key] = {
@@ -1184,10 +1363,18 @@ def build_dashboard_data(tab_name=None) -> dict:
             continue
         prep_rows.append(pr)
 
+    next_slot_dt = _fetch_next_cq_slot(tab_name)
+    next_slot_str = _fmt_time_only(next_slot_dt) if next_slot_dt else None
+
+    # === AJOUT DU PLANNING DU JOUR ===
+    machine_schedule = _fetch_machine_schedule_today(tab_name)
+
     return {
         "main_rows": sorted_main_rows,
         "prep_rows": prep_rows,
         "counts": counts,
         "configured_extensions": configured_extensions,
         "scan_interval_min": scan_interval_min,
+        "next_cq_slot": next_slot_str,
+        "machine_schedule": machine_schedule,
     }
