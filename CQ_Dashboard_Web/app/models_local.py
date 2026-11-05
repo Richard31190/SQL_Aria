@@ -44,15 +44,16 @@ class CQTab(db_local.Model):
         try:
             raw = json.loads(self.config_json or '{}')
             if isinstance(raw, list):
-                return {"network_paths": [], "file_extensions": ['.dcm', '.pdf'], "default_energy": "", "grouped_by_year": False}
+                return {"network_paths": [], "file_extensions": ['.dcm', '.pdf'], "default_energy": "", "grouped_by_year": False, "phantom": ""}
             return {
                 "network_paths": raw.get("network_paths", []),
                 "file_extensions": raw.get("file_extensions", ['.dcm', '.pdf']),
                 "default_energy": raw.get("default_energy", ""),
-                "grouped_by_year": raw.get("grouped_by_year", False)
+                "grouped_by_year": raw.get("grouped_by_year", False),
+                "phantom": raw.get("phantom", "")
             }
         except Exception:
-            return {"network_paths": [], "file_extensions": ['.dcm', '.pdf'], "default_energy": "", "grouped_by_year": False}
+            return {"network_paths": [], "file_extensions": ['.dcm', '.pdf'], "default_energy": "", "grouped_by_year": False, "phantom": ""}
 
     def get_aria_keywords(self):
         """Retourne la liste des mots-clés ARIA (CSV dans le champ name)."""
@@ -67,12 +68,16 @@ class CQTab(db_local.Model):
     def get_default_energy(self):
         return self._get_config().get("default_energy", "")
 
-    def set_config(self, network_paths=None, file_extensions=None, default_energy="", grouped_by_year=False):
+    def get_phantom(self):
+        return self._get_config().get("phantom", "")
+
+    def set_config(self, network_paths=None, file_extensions=None, default_energy="", grouped_by_year=False, phantom=""):
         self.config_json = json.dumps({
             "network_paths": network_paths or [],
             "file_extensions": file_extensions or ['.dcm', '.pdf'],
             "default_energy": default_energy or "",
-            "grouped_by_year": grouped_by_year
+            "grouped_by_year": grouped_by_year,
+            "phantom": phantom
         })
 
     def to_dict(self):
@@ -86,6 +91,7 @@ class CQTab(db_local.Model):
             'file_extensions': c["file_extensions"],
             'default_energy': c["default_energy"],
             'grouped_by_year': c["grouped_by_year"],
+            'phantom': c["phantom"],
         }
 
 
