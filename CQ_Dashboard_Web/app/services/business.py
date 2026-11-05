@@ -377,6 +377,23 @@ def _folder_from_scans(scans, fallback: str = "") -> str:
                 pass
     return fallback or "-"
 
+def _full_path_from_scans(scans, fallback: str = "") -> str:
+    """Reconstitue le chemin complet (base_path + dossier patient) pour l'infobulle."""
+    for s in scans:
+        raw = s.extra_data_json
+        if raw:
+            try:
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(data, dict):
+                    base = data.get("base_path", "")
+                    pf = data.get("patient_folder", "")
+                    if base and pf:
+                        return os.path.join(base, pf)
+                    elif base:
+                        return base
+            except Exception:
+                pass
+    return fallback or "-"
 
 def _extract_dicom_energy(file_path: str) -> str:
     """
@@ -747,10 +764,10 @@ def _is_cq_patient_activity(text: str) -> bool:
     return False
 
 
-def _fetch_timeplanner_cq_ipps_today(tabs: list) -> set:
-    """IPP patients avec RDV CQ aujourd'hui — matching machine via appointments.device."""
+def _fetch_timeplanner_cq_ipps_today(tabs: list) -> dict:
+    """Retourne un dictionnaire { ipp: device_name } des patients avec RDV CQ aujourd'hui."""
     cfg = get_aria_mysql_config()
-    ipps = set()
+    ipps = {}
     queries = [
         """
         SELECT
@@ -805,24 +822,20 @@ def _fetch_timeplanner_cq_ipps_today(tabs: list) -> set:
 
             ipp = _clean_ipp(str(r.get("ipp") or "").strip())
             if ipp:
-                ipps.add(ipp)
+                ipps[ipp] = device if device else "la machine"
 
         print(f"[Timeplanner] {len(ipps)} patient(s) CQ programmé(s) aujourd'hui")
         return ipps
     except Exception as e:
         print(f"[ARIA MySQL] Erreur Timeplanner : {e}")
-        return set()
+        return {}
     finally:
         try:
-            if cursor:
-                cursor.close()
-        except Exception:
-            pass
+            if cursor: cursor.close()
+        except: pass
         try:
-            if conn:
-                conn.close()
-        except Exception:
-            pass
+            if conn: conn.close()
+        except: pass
 
 
 # ===========================================================================
@@ -1342,19 +1355,21 @@ def build_dashboard_data(tab_name=None) -> dict:
         ext_status = _ext_status_for_scans(scans, exts_for_row)
 
         folder_name = _folder_from_scans(scans, fallback="") if scans else "-"
+        full_path = _full_path_from_scans(scans, fallback="") if scans else ""
         detected_energy = _energy_from_scans(scans, fallback=default_energy)
 
-        is_on_timeplanner = clean_ipp_val in timeplanner_ipps or ipp in timeplanner_ipps
-
-        timeplanner_icon = (
-            '<i class="fa-solid fa-calendar-check text-emerald-500 text-base" '
-            'title="CQ programmé aujourd\'hui sur la machine"></i>'
-            if is_on_timeplanner
-            else (
+        tp_device = timeplanner_ipps.get(clean_ipp_val) or timeplanner_ipps.get(ipp)
+        
+        if tp_device:
+            timeplanner_icon = (
+                f'<i class="fa-solid fa-calendar-check text-emerald-500 text-base" '
+                f'title="CQ de ce patient programmé aujourd\'hui sur : {tp_device}"></i>'
+            )
+        else:
+            timeplanner_icon = (
                 '<span class="text-slate-400 font-normal" '
                 'title="CQ non programmé aujourd\'hui">—</span>'
             )
-        )
 
         sort_val = datetime.max
         raw_met_date_str = None
@@ -1384,6 +1399,7 @@ def build_dashboard_data(tab_name=None) -> dict:
             "localisation": localisation if localisation else "Non spécifié",
             "ext_status": ext_status,
             "folder": folder_name,
+            "full_path": full_path, 
             "met_date": _fmt_dt(scheduled),
             "met_color": met_color,
             "raw_met_date": raw_met_date_str,
