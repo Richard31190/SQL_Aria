@@ -1093,18 +1093,6 @@ def _fmt_time_only(val) -> str:
 
 
 def _fetch_machine_schedule_today(tab_name):
-    """
-    Récupère le planning complet du jour pour la machine ciblée.
-
-    Règles métier appliquées :
-    - Fusion des lignes d'un même patient : on conserve l'heure de début
-      la plus tôt et l'heure de fin la plus tardive, et on concatène
-      les services distincts.
-    - Une ligne dont le service contient "PAS DE SEANCE" est ignorée.
-    - Une ligne dont le service contient "Implant" marque la fin de la
-      journée : elle est affichée, puis plus aucune ligne postérieure
-      n'est affichée.
-    """
     if not tab_name:
         return []
 
@@ -1120,7 +1108,6 @@ def _fetch_machine_schedule_today(tab_name):
             break
 
     if not tab:
-        print(f"[Planning] Onglet introuvable pour '{tab_name}'")
         return []
 
     cfg = get_aria_mysql_config()
@@ -1149,28 +1136,17 @@ def _fetch_machine_schedule_today(tab_name):
         conn, cursor = get_mysql_connection(cfg)
         cursor.execute(sql)
         rows = cursor.fetchall() or []
-    except Exception as e:
-        print(f"[ARIA MySQL] Erreur planning machine : {e}")
-        return []
     finally:
         try:
-            if cursor:
-                cursor.close()
-        except Exception:
-            pass
+            if cursor: cursor.close()
+        except: pass
         try:
-            if conn:
-                conn.close()
-        except Exception:
-            pass
+            if conn: conn.close()
+        except: pass
 
     tab_kw = _get_tab_keywords(tab)
-    devices_seen_today = set()
     raw_entries = []
 
-    # ---------------------------------------------------------------
-    # 1) Filtrage machine + règle "PAS DE SEANCE" + arrêt sur "Implant"
-    # ---------------------------------------------------------------
     for r in rows:
         if isinstance(r, dict):
             device_name = str(r.get("device") or "").strip()
@@ -1185,16 +1161,10 @@ def _fetch_machine_schedule_today(tab_name):
             device_name = str(device_name or "").strip()
             patient = f"{last_name} {first_name}".strip()
 
-        if device_name:
-            devices_seen_today.add(device_name)
-
-        # Rendez-vous d'une autre machine → ignoré
         if not device_name or not find_tab_for_focus(device_name, [tab]):
             continue
 
         service_norm = normalize(service)
-
-        # Règle : "PAS DE SEANCE" → le patient n'est pas affiché
         if "pasdeseance" in service_norm:
             continue
 
@@ -1203,7 +1173,8 @@ def _fetch_machine_schedule_today(tab_name):
         is_cq = _is_cq_patient_activity(service) or "cq" in patient.lower()
 
         entry = {
-            "patient_key": str(patient_db_id) if patient_db_id else (patient or f"__row_{len(raw_entries)}"),
+            "device": device_name,  # On mémorise la vraie machine
+            "patient_key": str(patient_db_id) if patient_db_id else patient,
             "patient": patient,
             "start": start_str,
             "end": end_str,
@@ -1214,27 +1185,20 @@ def _fetch_machine_schedule_today(tab_name):
         }
         raw_entries.append(entry)
 
-        # Règle : "Implant" = fin de journée → on affiche la ligne puis on stoppe
         if "implant" in service_norm:
             entry["end_of_day"] = True
             break
 
-    # ---------------------------------------------------------------
-    # 2) Fusion des lignes d'un même patient
-    # ---------------------------------------------------------------
-    status_priority = {
-        "in-progress": 3, "inprogress": 3, "arrived": 3,
-        "booked": 2, "ready": 2,
-        "completed": 1, "done": 1,
-    }
-
+    # Fusion par patient ET par machine
+    status_priority = {"in-progress": 3, "inprogress": 3, "arrived": 3, "booked": 2, "ready": 2, "completed": 1, "done": 1}
     merged = {}
     order = []
 
     for e in raw_entries:
-        key = e["patient_key"]
+        key = f"{e['device']}_{e['patient_key']}"
         if key not in merged:
             merged[key] = {
+                "device": e["device"],
                 "start": e["start"],
                 "end": e["end"],
                 "patient": e["patient"],
@@ -1247,25 +1211,22 @@ def _fetch_machine_schedule_today(tab_name):
             order.append(key)
         else:
             m = merged[key]
-            if e["start"] and (not m["start"] or e["start"] < m["start"]):
-                m["start"] = e["start"]
-            if e["end"] and (not m["end"] or e["end"] > m["end"]):
-                m["end"] = e["end"]
-            if e["service"] and e["service"] not in m["services"]:
-                m["services"].append(e["service"])
+            if e["start"] and (not m["start"] or e["start"] < m["start"]): m["start"] = e["start"]
+            if e["end"] and (not m["end"] or e["end"] > m["end"]): m["end"] = e["end"]
+            if e["service"] and e["service"] not in m["services"]: m["services"].append(e["service"])
             p = status_priority.get(e["status"], 0)
             if p > m["_status_priority"]:
                 m["status"] = e["status"]
                 m["_status_priority"] = p
             m["is_cq"] = m["is_cq"] or e["is_cq"]
-            if e["end_of_day"]:
-                m["end_of_day"] = True
+            if e["end_of_day"]: m["end_of_day"] = True
 
     schedule = []
     for key in order:
         m = merged[key]
         service_joined = " / ".join(m["services"])
         schedule.append({
+            "device": m["device"], # Ajout de la machine pour le JS
             "start": m["start"],
             "end": m["end"],
             "start_time": m["start"],
@@ -1278,15 +1239,6 @@ def _fetch_machine_schedule_today(tab_name):
             "is_cq": m["is_cq"],
             "end_of_day": m["end_of_day"],
         })
-
-    print(
-        f"[Planning] Onglet '{tab.label}' (Mots-clés Admin: {tab_kw}) : "
-        f"{len(schedule)} RDV affiché(s) après fusion "
-        f"(sur {len(raw_entries)} ligne(s) retenue(s), {len(rows)} au total)."
-    )
-    if rows and not raw_entries:
-        print(f"[Planning Diagnostic] Noms de machines présent(e)s aujourd'hui dans ARIA : {list(devices_seen_today)}.")
-        print(f"--> Pour afficher le planning, vérifiez qu'un de ces noms figure bien dans la liste des mots-clés de l'onglet '{tab.label}' sur la page Administration.")
 
     return schedule
 

@@ -131,15 +131,22 @@
 <div id="schedule-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-slate-900/50 backdrop-blur-sm transition-opacity">
     <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl max-w-4xl w-full mx-4 flex flex-col max-h-[85vh] overflow-hidden border border-slate-200 dark:border-slate-700">
 
-        <!-- Header -->
-        <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center bg-slate-50 dark:bg-slate-900/50">
-            <h2 class="text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                <i class="fa-solid fa-calendar-day text-indigo-500"></i>
-                Planning du jour : <span id="schedule-machine-name" class="text-indigo-600 dark:text-indigo-400"></span>
-            </h2>
-            <button onclick="closeScheduleModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors">
-                <i class="fa-solid fa-xmark text-xl"></i>
-            </button>
+        <!-- Header avec titre et sous-onglets machine -->
+        <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 flex flex-col gap-3">
+            <div class="flex justify-between items-center">
+                <h2 class="text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                    <i class="fa-solid fa-calendar-day text-indigo-500"></i>
+                    Planning du jour : <span id="schedule-machine-name" class="text-indigo-600 dark:text-indigo-400"></span>
+                </h2>
+                <button onclick="closeScheduleModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors">
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+
+            <!-- Conteneur pour les sous-onglets (vide si 1 seule machine) -->
+            <div id="schedule-device-tabs" class="flex gap-2 overflow-x-auto hidden pb-1">
+                <!-- Boutons générés par JS -->
+            </div>
         </div>
 
         <!-- Content -->
@@ -417,22 +424,57 @@
     }
 
     // GESTION DE LA MODALE DU PLANNING
+    let activeModalDevice = null;
+
     function renderScheduleModal() {
         const tbody = document.getElementById('schedule-modal-body');
+        const tabsContainer = document.getElementById('schedule-device-tabs');
         if (!tbody) return;
 
         if (!currentMachineSchedule || currentMachineSchedule.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="4" class="px-6 py-8 text-center text-slate-500 italic text-sm">Aucun rendez-vous prévu aujourd'hui sur cette machine.</td></tr>`;
+            tabsContainer.classList.add('hidden');
+            tbody.innerHTML = `<tr><td colspan="4" class="px-6 py-8 text-center text-slate-500 italic text-sm">Aucun rendez-vous prévu aujourd'hui.</td></tr>`;
             return;
         }
 
-        tbody.innerHTML = currentMachineSchedule.map(appt => {
+        // 1. Extraire les machines uniques trouvées
+        const devices = [...new Set(currentMachineSchedule.map(a => a.device || 'Inconnu'))].sort();
+
+        // Si la machine sélectionnée n'existe plus, on prend la première
+        if (!devices.includes(activeModalDevice)) {
+            activeModalDevice = devices[0];
+        }
+
+        // 2. Afficher les sous-onglets si plusieurs machines (ex: Nova 3, Nova 5)
+        if (devices.length > 1) {
+            tabsContainer.classList.remove('hidden');
+            tabsContainer.innerHTML = devices.map(dev => {
+                const isActive = (dev === activeModalDevice);
+                const btnClass = isActive
+                    ? "bg-indigo-600 text-white shadow-md border-indigo-600"
+                    : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700 dark:hover:bg-slate-700";
+                return `<button onclick="switchModalDevice('${dev}')" class="px-4 py-1.5 rounded-full text-xs font-bold transition-all border ${btnClass}">${dev}</button>`;
+            }).join('');
+        } else {
+            tabsContainer.classList.add('hidden');
+        }
+
+        // 3. Filtrer le planning pour ne garder que la machine active dans la modale
+        const filteredSchedule = currentMachineSchedule.filter(a => (a.device || 'Inconnu') === activeModalDevice);
+
+        if (filteredSchedule.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="4" class="px-6 py-8 text-center text-slate-500 italic text-sm">Aucun rendez-vous pour cette machine spécifique.</td></tr>`;
+            return;
+        }
+
+        // 4. Générer le tableau
+        tbody.innerHTML = filteredSchedule.map(appt => {
             const startStr = appt.start || appt.start_time || '—';
             const endStr = appt.end || appt.end_time || '—';
             const patientStr = appt.patient || appt.patient_name || 'Patient anonyme';
             const serviceStr = appt.service || appt.service_type || '—';
             const statusStr = (appt.status || 'ready').toLowerCase();
-            const isCQ = appt.is_cq || serviceStr.toLowerCase().includes('cq') || patientStr.toLowerCase().includes('cq');
+            const isCQ = appt.is_cq;
 
             let statusClass = "bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300";
             let statusLabel = statusStr;
@@ -473,9 +515,17 @@
         }).join('');
     }
 
+    function switchModalDevice(deviceName) {
+        activeModalDevice = deviceName;
+        renderScheduleModal();
+    }
+
     function openScheduleModal() {
         const titleSpan = document.getElementById('schedule-machine-name');
         if (titleSpan) titleSpan.innerText = activeTab;
+
+        // Force la réinitialisation sur la première machine au lieu de mémoriser
+        activeModalDevice = null;
 
         renderScheduleModal();
 
@@ -489,7 +539,7 @@
     }
 
     // Fermer la modale si on clique en dehors
-    document.getElementById('schedule-modal')?.addEventListener('click', function(e) {
+    document.getElementById('schedule-modal')?.addEventListener('click', function (e) {
         if (e.target === this) closeScheduleModal();
     });
 
