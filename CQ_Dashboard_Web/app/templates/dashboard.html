@@ -1,4 +1,4 @@
-<!-- templates\dashboard.html -->
+<!-- templates/dashboard.html -->
 {% extends 'base.html' %}
 
 {% block content %}
@@ -130,7 +130,6 @@
 <div id="schedule-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-slate-900/50 backdrop-blur-sm transition-opacity">
     <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl max-w-4xl w-full mx-4 flex flex-col max-h-[85vh] overflow-hidden border border-slate-200 dark:border-slate-700">
 
-        <!-- Header avec titre et sous-onglets machine -->
         <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 flex flex-col gap-3">
             <div class="flex justify-between items-center">
                 <h2 class="text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
@@ -141,14 +140,9 @@
                     <i class="fa-solid fa-xmark text-xl"></i>
                 </button>
             </div>
-
-            <!-- Conteneur pour les sous-onglets (vide si 1 seule machine) -->
-            <div id="schedule-device-tabs" class="flex gap-2 overflow-x-auto hidden pb-1">
-                <!-- Boutons générés par JS -->
-            </div>
+            <div id="schedule-device-tabs" class="flex gap-2 overflow-x-auto hidden pb-1"></div>
         </div>
 
-        <!-- Content -->
         <div class="p-0 overflow-y-auto flex-1">
             <table class="w-full text-sm text-left border-collapse">
                 <thead class="bg-slate-100 dark:bg-slate-900/80 text-slate-600 dark:text-slate-400 uppercase tracking-wider text-xs sticky top-0 z-10 shadow-sm">
@@ -160,7 +154,59 @@
                     </tr>
                 </thead>
                 <tbody id="schedule-modal-body" class="divide-y divide-slate-100 dark:divide-slate-700/50">
-                    <!-- Rempli par JS -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL DUMP DICOM (style éditeur) -->
+<div id="dicom-modal" class="fixed inset-0 z-[60] hidden flex items-center justify-center bg-slate-900/60 backdrop-blur-sm transition-opacity">
+    <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl max-w-5xl w-full mx-4 flex flex-col max-h-[90vh] overflow-hidden border border-slate-200 dark:border-slate-700">
+
+        <!-- Header -->
+        <div class="px-5 py-3 border-b border-slate-200 dark:border-slate-700 bg-slate-900 text-white flex justify-between items-center gap-3">
+            <div class="min-w-0 flex-1">
+                <h2 class="text-sm font-bold flex items-center gap-2">
+                    <i class="fa-solid fa-file-medical text-emerald-400"></i>
+                    Éditeur DICOM (lecture seule)
+                    <span id="dicom-modal-count" class="text-[10px] font-normal text-slate-400"></span>
+                </h2>
+                <p class="text-[10px] text-slate-400 font-mono truncate" id="dicom-modal-filepath" title="">—</p>
+            </div>
+            <button onclick="closeDicomModal()" class="text-slate-400 hover:text-white transition-colors shrink-0">
+                <i class="fa-solid fa-xmark text-xl"></i>
+            </button>
+        </div>
+
+        <!-- Barre de filtre -->
+        <div class="px-4 py-2 bg-slate-50 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-700 flex flex-wrap items-center gap-2">
+            <div class="relative flex-1 min-w-[200px]">
+                <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-2 text-slate-400 text-xs"></i>
+                <input type="text" id="dicom-search"
+                       placeholder="Filtrer tag, keyword, valeur… (ex: Beam, Gantry, MU, Energy)"
+                       class="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-emerald-500">
+            </div>
+            <label class="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300 cursor-pointer select-none">
+                <input type="checkbox" id="dicom-hide-empty" class="rounded text-emerald-600 focus:ring-emerald-500">
+                Masquer valeurs vides
+            </label>
+            <span id="dicom-modality-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200"></span>
+        </div>
+
+        <!-- Table dump -->
+        <div class="overflow-auto flex-1" id="dicom-modal-body">
+            <table class="w-full text-[11px] text-left border-collapse font-mono">
+                <thead class="bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-400 sticky top-0 z-10 shadow-sm">
+                    <tr>
+                        <th class="px-3 py-2 border-b border-slate-200 dark:border-slate-700 w-[110px]">Tag</th>
+                        <th class="px-3 py-2 border-b border-slate-200 dark:border-slate-700 w-[50px]">VR</th>
+                        <th class="px-3 py-2 border-b border-slate-200 dark:border-slate-700 w-[240px]">Keyword / Path</th>
+                        <th class="px-3 py-2 border-b border-slate-200 dark:border-slate-700">Valeur</th>
+                    </tr>
+                </thead>
+                <tbody id="dicom-dump-body" class="divide-y divide-slate-100 dark:divide-slate-800">
+                    <!-- JS -->
                 </tbody>
             </table>
         </div>
@@ -182,7 +228,6 @@
     const FIXED_COLS_BEFORE = 5; // checkbox, IPP, Nom, Prénom, Localisation
     let currentPhantom = "";     // "Delta 4" / "Octavius 4D" / "" depuis l'API
 
-    // Mémorise le dernier planning chargé
     let currentMachineSchedule = [];
 
     function isDeltaPhantom() {
@@ -198,7 +243,6 @@
             `<th class="p-2 border-b border-slate-700 text-center" title="Fichier ${ext}">${String(ext).toUpperCase()}</th>`
         ).join('');
 
-        // Colonne Durée d'irradiation uniquement pour Delta 4
         const durationHeader = isDelta
             ? `<th class="p-2 border-b border-slate-700 text-center" title="Durée d'irradiation extraite du fichier ScandiDos">Durée (min)</th>`
             : '';
@@ -238,7 +282,6 @@
     }
 
     function colCount() {
-        // FIXED_COLS_BEFORE + extensions + (Durée si Delta 4) + 7 colonnes fixes après
         return FIXED_COLS_BEFORE + (configuredExtensions || []).length + (isDeltaPhantom() ? 1 : 0) + 7;
     }
 
@@ -258,10 +301,7 @@
                     configuredExtensions = data.configured_extensions;
                 }
 
-                // Phantom de l'onglet actif (Admin : Delta 4 / Octavius 4D)
                 currentPhantom = data.phantom || "";
-
-                // Mémorisation du planning pour la modale
                 currentMachineSchedule = data.machine_schedule || [];
 
                 buildThead(configuredExtensions);
@@ -309,6 +349,8 @@
         rows.forEach(r => {
             const extStatus = r.ext_status || {};
             let extCells = '';
+
+            // --- GESTION DES COCHES VERTES ET BOUTON DICOM ---
             exts.forEach(ext => {
                 let cell = extStatus[ext];
                 if (cell === undefined || cell === null) {
@@ -316,7 +358,17 @@
                     else if (ext === '.pdf' && r.pdf !== undefined) cell = r.pdf;
                     else cell = '<span class="text-slate-400 font-normal">-</span>';
                 }
-                if (cell === true) cell = '<i class="fa-solid fa-circle-check text-emerald-500 text-sm"></i>';
+
+                if (cell === true) {
+                    // Si c'est un DICOM, on rend la coche cliquable
+                    if (ext.toLowerCase() === '.dcm') {
+                        cell = `<button onclick="openDicomModal('${r.patient_id || r.ipp}')" title="Voir les données DICOM" class="hover:scale-125 transition-transform">
+                                   <i class="fa-solid fa-circle-check text-emerald-500 text-sm cursor-pointer shadow-sm rounded-full bg-white"></i>
+                               </button>`;
+                    } else {
+                        cell = '<i class="fa-solid fa-circle-check text-emerald-500 text-sm"></i>';
+                    }
+                }
                 if (cell === false) cell = '<span class="text-slate-400 font-normal">-</span>';
                 extCells += `<td class="p-2 text-center text-sm">${cell}</td>`;
             });
@@ -332,14 +384,13 @@
             const techniqueKey = r.tech_name || r.technique || '';
             const safeTitle = String(techniqueLabel).replace(/"/g, '&quot;');
 
-            // Durée d'acquisition pour le calcul du temps :
-            // Delta 4 → priorité à la durée ScandiDos si présente, sinon durée de base Admin
+            // --- CALCUL DU TEMPS ESTIMÉ (PRIORITÉ SCANDIDOS) ---
+            // Si Delta 4 a une durée extraite, on écrase la base_duration
             let acqForCalc = r.base_duration ?? r.acq_minutes ?? 0;
             if (isDelta && r.delta4_duration != null && r.delta4_duration !== '' && !isNaN(parseFloat(r.delta4_duration))) {
                 acqForCalc = parseFloat(r.delta4_duration);
             }
 
-            // Cellule Durée (min) — Delta 4 uniquement
             let durationCell = '';
             if (isDelta) {
                 const durDisplay = (r.delta4_duration != null && r.delta4_duration !== '' && !isNaN(parseFloat(r.delta4_duration)))
@@ -348,7 +399,6 @@
                 durationCell = `<td class="p-2 text-center font-mono font-semibold text-cyan-700 dark:text-cyan-400">${durDisplay}</td>`;
             }
 
-            // Localisation : préfère delta4_fraction (ScandiDos) si dispo, sinon localisation ARIA
             const locDisplay = (isDelta && r.delta4_fraction) ? r.delta4_fraction : (r.localisation || '');
 
             const tr = document.createElement('tr');
@@ -389,6 +439,130 @@
         calculateTime();
     }
 
+
+    // ---- DUMP DICOM style éditeur ----
+    let _dicomAllRows = []; // cache pour le filtre local
+
+    function openDicomModal(ipp) {
+        const modal = document.getElementById('dicom-modal');
+        const tbody = document.getElementById('dicom-dump-body');
+        const filepath = document.getElementById('dicom-modal-filepath');
+        const countEl = document.getElementById('dicom-modal-count');
+        const badge = document.getElementById('dicom-modality-badge');
+        const search = document.getElementById('dicom-search');
+        const hideEmpty = document.getElementById('dicom-hide-empty');
+
+        if (search) search.value = '';
+        if (hideEmpty) hideEmpty.checked = false;
+        _dicomAllRows = [];
+
+        tbody.innerHTML = `
+            <tr><td colspan="4" class="px-4 py-12 text-center">
+                <i class="fa-solid fa-spinner fa-spin text-emerald-500 text-2xl mb-2"></i>
+                <div class="text-slate-500 text-xs font-sans font-medium">Lecture complète du DICOM…</div>
+            </td></tr>`;
+        filepath.innerText = '—';
+        countEl.innerText = '';
+        badge.innerText = '';
+        modal.classList.remove('hidden');
+
+        fetch(`/api/dicom?ipp=${encodeURIComponent(ipp)}`)
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) {
+                    tbody.innerHTML = `<tr><td colspan="4" class="p-4">
+                        <div class="font-sans p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm">
+                            <i class="fa-solid fa-triangle-exclamation mr-2"></i>${data.error}
+                        </div></td></tr>`;
+                    return;
+                }
+
+                filepath.innerText = data.file_path || data.file_name || '';
+                filepath.title = data.file_path || '';
+                badge.innerText = data.modality || 'DICOM';
+                countEl.innerText = `— ${data.n_elements || 0} élément(s)`;
+
+                // file_meta d'abord, puis dataset
+                _dicomAllRows = [].concat(data.file_meta || [], data.elements || []);
+                renderDicomDump();
+            })
+            .catch(() => {
+                tbody.innerHTML = `<tr><td colspan="4" class="p-4 font-sans text-red-600 text-sm">Erreur de communication serveur.</td></tr>`;
+            });
+    }
+
+    function renderDicomDump() {
+        const tbody = document.getElementById('dicom-dump-body');
+        const search = document.getElementById('dicom-search');
+        const hideEmpty = document.getElementById('dicom-hide-empty');
+        if (!tbody) return;
+
+        const q = (search && search.value ? search.value : '').trim().toLowerCase();
+        const noEmpty = hideEmpty && hideEmpty.checked;
+
+        const filtered = _dicomAllRows.filter(r => {
+            if (noEmpty && !r.is_seq && (!r.value || String(r.value).trim() === '')) return false;
+            if (!q) return true;
+            const hay = `${r.tag || ''} ${r.keyword || ''} ${r.path || ''} ${r.vr || ''} ${r.value || ''}`.toLowerCase();
+            return hay.includes(q);
+        });
+
+        if (!filtered.length) {
+            tbody.innerHTML = `<tr><td colspan="4" class="px-4 py-8 text-center text-slate-400 font-sans text-xs">Aucun tag ne correspond au filtre.</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = filtered.map(r => {
+            const depth = r.depth || 0;
+            const pad = depth * 12;
+            const isSeq = r.is_seq;
+            const rowBg = isSeq
+                ? 'bg-indigo-50/80 dark:bg-indigo-950/30 font-sans'
+                : 'hover:bg-slate-50 dark:hover:bg-slate-800/40';
+            const kwClass = isSeq
+                ? 'text-indigo-700 dark:text-indigo-300 font-bold font-sans'
+                : 'text-slate-800 dark:text-slate-200';
+            const valClass = isSeq
+                ? 'text-indigo-500 italic font-sans'
+                : 'text-slate-700 dark:text-slate-300 break-all';
+
+            // Indentation visuelle du path
+            const pathLabel = r.path || r.keyword || '';
+            const safeVal = String(r.value || '')
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+            return `
+                <tr class="${rowBg}">
+                    <td class="px-3 py-1.5 text-cyan-700 dark:text-cyan-400 whitespace-nowrap">${r.tag || ''}</td>
+                    <td class="px-3 py-1.5 text-amber-600 dark:text-amber-400 font-bold">${r.vr || ''}</td>
+                    <td class="px-3 py-1.5 ${kwClass}" style="padding-left:${12 + pad}px" title="${pathLabel}">
+                        ${isSeq ? '<i class="fa-solid fa-folder-tree text-[10px] mr-1 opacity-70"></i>' : ''}
+                        ${pathLabel}
+                    </td>
+                    <td class="px-3 py-1.5 ${valClass}">${safeVal}</td>
+                </tr>`;
+        }).join('');
+    }
+
+    function closeDicomModal() {
+        const modal = document.getElementById('dicom-modal');
+        if (modal) modal.classList.add('hidden');
+        _dicomAllRows = [];
+    }
+
+    // Filtre live
+    document.getElementById('dicom-search')?.addEventListener('input', renderDicomDump);
+    document.getElementById('dicom-hide-empty')?.addEventListener('change', renderDicomDump);
+
+    document.getElementById('dicom-modal')?.addEventListener('click', function (e) {
+        if (e.target === this) closeDicomModal();
+    });
+
+    document.getElementById('dicom-modal')?.addEventListener('click', function (e) {
+        if (e.target === this) closeDicomModal();
+    });
+    // ------------------------------------
+
     const tableBody = document.getElementById('dashboard-table-body');
     if (tableBody) {
         tableBody.addEventListener('change', function (e) {
@@ -413,7 +587,6 @@
         const techniques = {};
 
         document.querySelectorAll('.row-checkbox:checked').forEach(cb => {
-            // parseFloat pour les durées ScandiDos (ex: 2.3456 min)
             totalAcq += parseFloat(cb.dataset.acq) || 0;
             const tech = cb.dataset.tech;
             const mount = parseFloat(cb.dataset.mount) || 0;
@@ -475,15 +648,12 @@
             return;
         }
 
-        // 1. Extraire les machines uniques trouvées
         const devices = [...new Set(currentMachineSchedule.map(a => a.device || 'Inconnu'))].sort();
 
-        // Si la machine sélectionnée n'existe plus, on prend la première
         if (!devices.includes(activeModalDevice)) {
             activeModalDevice = devices[0];
         }
 
-        // 2. Afficher les sous-onglets si plusieurs machines (ex: Nova 3, Nova 5)
         if (devices.length > 1) {
             tabsContainer.classList.remove('hidden');
             tabsContainer.innerHTML = devices.map(dev => {
@@ -497,7 +667,6 @@
             tabsContainer.classList.add('hidden');
         }
 
-        // 3. Filtrer le planning pour ne garder que la machine active dans la modale
         const filteredSchedule = currentMachineSchedule.filter(a => (a.device || 'Inconnu') === activeModalDevice);
 
         if (filteredSchedule.length === 0) {
@@ -505,7 +674,6 @@
             return;
         }
 
-        // 4. Générer le tableau
         tbody.innerHTML = filteredSchedule.map(appt => {
             const startStr = appt.start || appt.start_time || '—';
             const endStr = appt.end || appt.end_time || '—';
@@ -562,9 +730,7 @@
         const titleSpan = document.getElementById('schedule-machine-name');
         if (titleSpan) titleSpan.innerText = activeTab;
 
-        // Force la réinitialisation sur la première machine au lieu de mémoriser
         activeModalDevice = null;
-
         renderScheduleModal();
 
         const modal = document.getElementById('schedule-modal');
@@ -576,7 +742,6 @@
         if (modal) modal.classList.add('hidden');
     }
 
-    // Fermer la modale si on clique en dehors
     document.getElementById('schedule-modal')?.addEventListener('click', function (e) {
         if (e.target === this) closeScheduleModal();
     });
