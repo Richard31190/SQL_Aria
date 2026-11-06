@@ -166,32 +166,47 @@
 
         <!-- Header -->
         <div class="px-5 py-3 border-b border-slate-200 dark:border-slate-700 bg-slate-900 text-white flex justify-between items-center gap-3">
-            <div class="min-w-0 flex-1">
-                <h2 class="text-sm font-bold flex items-center gap-2">
-                    <i class="fa-solid fa-file-medical text-emerald-400"></i>
-                    Éditeur DICOM (lecture seule)
-                    <span id="dicom-modal-count" class="text-[10px] font-normal text-slate-400"></span>
-                </h2>
-                <p class="text-[10px] text-slate-400 font-mono truncate" id="dicom-modal-filepath" title="">—</p>
+            <div class="min-w-0 flex-1 flex items-center gap-3">
+                <div>
+                    <h2 class="text-sm font-bold flex items-center gap-2">
+                        <i class="fa-solid fa-file-medical text-emerald-400"></i>
+                        Éditeur DICOM (lecture seule)
+                        <span id="dicom-modal-count" class="text-[10px] font-normal text-slate-400"></span>
+                    </h2>
+                    <p class="text-[10px] text-slate-400 font-mono truncate max-w-xl" id="dicom-modal-filepath" title="">—</p>
+                </div>
+
+                <!-- Sélecteur si plusieurs fichiers DICOM pour le patient -->
+                <select id="dicom-file-select" onchange="switchDicomFile(this.value)"
+                        class="hidden text-xs bg-slate-800 border border-slate-700 text-slate-200 rounded px-2 py-1 focus:ring-1 focus:ring-emerald-500">
+                </select>
             </div>
+
             <button onclick="closeDicomModal()" class="text-slate-400 hover:text-white transition-colors shrink-0">
                 <i class="fa-solid fa-xmark text-xl"></i>
             </button>
         </div>
 
-        <!-- Barre de filtre -->
-        <div class="px-4 py-2 bg-slate-50 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-700 flex flex-wrap items-center gap-2">
+        <!-- Barre de filtre & badges -->
+        <div class="px-4 py-2 bg-slate-50 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-700 flex flex-wrap items-center gap-3">
             <div class="relative flex-1 min-w-[200px]">
                 <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-2 text-slate-400 text-xs"></i>
                 <input type="text" id="dicom-search"
-                       placeholder="Filtrer tag, keyword, valeur… (ex: Beam, Gantry, MU, Energy)"
+                       placeholder="Filtrer tag, keyword, valeur… (ex: 300A,0114, NominalBeamEnergy, 6)"
                        class="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-emerald-500">
             </div>
             <label class="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300 cursor-pointer select-none">
                 <input type="checkbox" id="dicom-hide-empty" class="rounded text-emerald-600 focus:ring-emerald-500">
                 Masquer valeurs vides
             </label>
+
+            <!-- Badge Modalité -->
             <span id="dicom-modality-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200"></span>
+
+            <!-- Badge Énergie détectée -->
+            <span id="dicom-energy-badge" class="hidden px-2.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+                <i class="fa-solid fa-bolt mr-1"></i> Énergie: <span id="dicom-energy-val"></span> MV
+            </span>
         </div>
 
         <!-- Table dump -->
@@ -201,7 +216,7 @@
                     <tr>
                         <th class="px-3 py-2 border-b border-slate-200 dark:border-slate-700 w-[110px]">Tag</th>
                         <th class="px-3 py-2 border-b border-slate-200 dark:border-slate-700 w-[50px]">VR</th>
-                        <th class="px-3 py-2 border-b border-slate-200 dark:border-slate-700 w-[240px]">Keyword / Path</th>
+                        <th class="px-3 py-2 border-b border-slate-200 dark:border-slate-700 w-[260px]">Keyword / Path</th>
                         <th class="px-3 py-2 border-b border-slate-200 dark:border-slate-700">Valeur</th>
                     </tr>
                 </thead>
@@ -458,14 +473,19 @@
 
 
     // ---- DUMP DICOM style éditeur ----
-    let _dicomAllRows = []; // cache pour le filtre local
+    let _dicomAllRows = [];
+    let _currentDicomIpp = null;
 
-    function openDicomModal(ipp) {
+    function openDicomModal(ipp, customPath = null) {
+        _currentDicomIpp = ipp;
         const modal = document.getElementById('dicom-modal');
         const tbody = document.getElementById('dicom-dump-body');
         const filepath = document.getElementById('dicom-modal-filepath');
         const countEl = document.getElementById('dicom-modal-count');
         const badge = document.getElementById('dicom-modality-badge');
+        const energyBadge = document.getElementById('dicom-energy-badge');
+        const energyVal = document.getElementById('dicom-energy-val');
+        const select = document.getElementById('dicom-file-select');
         const search = document.getElementById('dicom-search');
         const hideEmpty = document.getElementById('dicom-hide-empty');
 
@@ -474,23 +494,31 @@
         _dicomAllRows = [];
 
         tbody.innerHTML = `
-            <tr><td colspan="4" class="px-4 py-12 text-center">
-                <i class="fa-solid fa-spinner fa-spin text-emerald-500 text-2xl mb-2"></i>
-                <div class="text-slate-500 text-xs font-sans font-medium">Lecture complète du DICOM…</div>
-            </td></tr>`;
+        <tr><td colspan="4" class="px-4 py-12 text-center">
+            <i class="fa-solid fa-spinner fa-spin text-emerald-500 text-2xl mb-2"></i>
+            <div class="text-slate-500 text-xs font-sans font-medium">Analyse et récursion DICOM en cours…</div>
+        </td></tr>`;
+
         filepath.innerText = '—';
         countEl.innerText = '';
         badge.innerText = '';
+        energyBadge.classList.add('hidden');
+        select.classList.add('hidden');
         modal.classList.remove('hidden');
 
-        fetch(`/api/dicom?ipp=${encodeURIComponent(ipp)}`)
+        let url = `/api/dicom?ipp=${encodeURIComponent(ipp)}`;
+        if (customPath) {
+            url += `&path=${encodeURIComponent(customPath)}`;
+        }
+
+        fetch(url)
             .then(res => res.json())
             .then(data => {
                 if (data.error) {
                     tbody.innerHTML = `<tr><td colspan="4" class="p-4">
-                        <div class="font-sans p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm">
-                            <i class="fa-solid fa-triangle-exclamation mr-2"></i>${data.error}
-                        </div></td></tr>`;
+                    <div class="font-sans p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm">
+                        <i class="fa-solid fa-triangle-exclamation mr-2"></i>${data.error}
+                    </div></td></tr>`;
                     return;
                 }
 
@@ -499,13 +527,32 @@
                 badge.innerText = data.modality || 'DICOM';
                 countEl.innerText = `— ${data.n_elements || 0} élément(s)`;
 
-                // file_meta d'abord, puis dataset
+                if (data.detected_energy) {
+                    energyVal.innerText = data.detected_energy;
+                    energyBadge.classList.remove('hidden');
+                }
+
+                // Gérer le sélecteur de fichiers si le patient a plusieurs DICOM
+                if (data.available_files && data.available_files.length > 1) {
+                    select.innerHTML = data.available_files.map(f => {
+                        const selected = (f.path === data.file_path) ? 'selected' : '';
+                        return `<option value="${f.path}" ${selected}>${f.name}</option>`;
+                    }).join('');
+                    select.classList.remove('hidden');
+                }
+
                 _dicomAllRows = [].concat(data.file_meta || [], data.elements || []);
                 renderDicomDump();
             })
             .catch(() => {
                 tbody.innerHTML = `<tr><td colspan="4" class="p-4 font-sans text-red-600 text-sm">Erreur de communication serveur.</td></tr>`;
             });
+    }
+
+    function switchDicomFile(path) {
+        if (_currentDicomIpp && path) {
+            openDicomModal(_currentDicomIpp, path);
+        }
     }
 
     function renderDicomDump() {

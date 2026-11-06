@@ -66,29 +66,63 @@ def trigger_scan():
 
 @main_bp.route("/api/dicom")
 def get_dicom_info():
-    """Dump DICOM complet (style éditeur) — lecture seule."""
+    """Dump DICOM complet avec priorité au fichier RTPLAN et support multi-fichiers."""
     ipp = request.args.get("ipp")
-    if not ipp:
-        return jsonify({"error": "IPP manquant"}), 400
+    target_path = request.args.get("path")
 
-    # Cherche le .dcm du patient (IPP peut être stocké nettoyé ou brut)
-    scan = (
-        ScanCache.query.filter_by(patient_id=ipp, file_type=".dcm").first()
-        or ScanCache.query.filter(
+    if not ipp and not target_path:
+        return jsonify({"error": "IPP ou chemin de fichier manquant"}), 400
+
+    import pydicom
+    from pydicom.datadict import keyword_for_tag, dictionary_description
+    from pydicom.sequence import Sequence
+    from pydicom.dataelem import DataElement
+
+    # 1. Lister tous les fichiers DICOM du patient
+    available_scans = []
+    if ipp:
+        scans = ScanCache.query.filter(
             ScanCache.file_type == ".dcm",
-            ScanCache.patient_id.like(f"%{ipp.lstrip('0')}%"),
-        ).first()
-    )
-    if not scan or not scan.file_path or not os.path.exists(scan.file_path):
-        return jsonify({"error": "Fichier DICOM introuvable sur le réseau"}), 404
+            (ScanCache.patient_id == ipp) | (ScanCache.patient_id.like(f"%{ipp.lstrip('0')}%"))
+        ).all()
+        
+        for s in scans:
+            if s.file_path and os.path.exists(s.file_path):
+                available_scans.append({
+                    "path": s.file_path,
+                    "name": os.path.basename(s.file_path)
+                })
+
+    if not available_scans and not target_path:
+        return jsonify({"error": "Aucun fichier DICOM introuvable sur le réseau pour ce patient"}), 404
+
+    # 2. Sélectionner le fichier : Priorité absolue au RTPLAN (fichiers commencant par RP ou de modalité RTPLAN)
+    selected_path = target_path
+
+    if not selected_path and available_scans:
+        # Chercher un fichier RP... (RT Plan)
+        rp_file = next((s["path"] for s in available_scans if os.path.basename(s["path"]).upper().startswith("RP")), None)
+        if rp_file:
+            selected_path = rp_file
+        else:
+            # Sinon tester la modalité dans l'en-tête
+            for s in available_scans:
+                try:
+                    hdr = pydicom.dcmread(s["path"], stop_before_pixels=True, specific_tags=['Modality'])
+                    if str(getattr(hdr, 'Modality', '')).upper() == 'RTPLAN':
+                        selected_path = s["path"]
+                        break
+                except Exception:
+                    pass
+            # Sinon prendre le premier disponible
+            if not selected_path:
+                selected_path = available_scans[0]["path"]
+
+    if not selected_path or not os.path.exists(selected_path):
+        return jsonify({"error": "Fichier DICOM sélectionné introuvable"}), 404
 
     try:
-        import pydicom
-        from pydicom.datadict import keyword_for_tag, dictionary_description
-        from pydicom.sequence import Sequence
-        from pydicom.dataelem import DataElement
-
-        ds = pydicom.dcmread(scan.file_path, stop_before_pixels=True, force=True)
+        ds = pydicom.dcmread(selected_path, stop_before_pixels=True, force=True)
 
         def _tag_str(tag) -> str:
             try:
@@ -99,44 +133,29 @@ def get_dicom_info():
         def _keyword(tag) -> str:
             try:
                 kw = keyword_for_tag(tag)
-                if kw:
-                    return kw
-            except Exception:
-                pass
+                if kw: return kw
+            except Exception: pass
             try:
                 desc = dictionary_description(tag)
-                if desc:
-                    return desc
-            except Exception:
-                pass
+                if desc: return desc
+            except Exception: pass
             return "Private" if getattr(tag, "is_private", False) else "Unknown"
 
         def _fmt_value(val, max_len: int = 500):
-            """Formate une valeur atomique pour l'affichage."""
-            if val is None:
-                return ""
-            # Évite d'exploser l'UI avec des bytes / OB / OW
+            if val is None: return ""
             if isinstance(val, (bytes, bytearray)):
                 return f"<binary {len(val)} bytes>"
             if isinstance(val, pydicom.valuerep.PersonName):
                 return str(val).replace("^", " ")
             if isinstance(val, (list, pydicom.multival.MultiValue)):
-                parts = []
-                for v in val:
-                    if isinstance(v, (bytes, bytearray)):
-                        parts.append(f"<binary {len(v)} bytes>")
-                    else:
-                        parts.append(str(v))
+                parts = [f"<binary {len(v)} bytes>" if isinstance(v, (bytes, bytearray)) else str(v) for v in val]
                 s = " \\ ".join(parts)
             else:
                 s = str(val)
             s = s.replace("\x00", "").strip()
-            if len(s) > max_len:
-                return s[:max_len] + f" … (+{len(s) - max_len} car.)"
-            return s
+            return s[:max_len] + f" … (+{len(s) - max_len} car.)" if len(s) > max_len else s
 
         def _walk_dataset(dataset, path_prefix: str = "") -> list:
-            """Parcourt récursivement tout le dataset (y compris Sequence)."""
             rows = []
             try:
                 elements = list(dataset)
@@ -148,78 +167,61 @@ def get_dicom_info():
                     continue
 
                 tag = elem.tag
-                # Pixel Data / bulk : déjà exclus via stop_before_pixels, mais au cas où
                 try:
-                    if int(tag.group) == 0x7FE0:
-                        continue
-                except Exception:
-                    pass
+                    if int(tag.group) == 0x7FE0: continue
+                except Exception: pass
 
                 tag_s = _tag_str(tag)
                 kw = _keyword(tag)
-                try:
-                    vr = str(elem.VR) if elem.VR else ""
-                except Exception:
-                    vr = ""
-
+                vr = str(elem.VR) if elem.VR else ""
                 name_path = f"{path_prefix}{kw}" if path_prefix else kw
 
-                # Séquence → un en-tête + items enfants
                 if vr == "SQ" or isinstance(elem.value, Sequence):
                     seq = elem.value if isinstance(elem.value, Sequence) else []
                     n = len(seq) if seq is not None else 0
                     rows.append({
-                        "tag": tag_s,
-                        "keyword": kw,
-                        "path": name_path,
-                        "vr": "SQ",
-                        "value": f"<Sequence of {n} item(s)>",
-                        "is_seq": True,
-                        "depth": path_prefix.count(" › "),
+                        "tag": tag_s, "keyword": kw, "path": name_path, "vr": "SQ",
+                        "value": f"<Sequence of {n} item(s)>", "is_seq": True,
+                        "depth": path_prefix.count(" › ")
                     })
                     if seq:
                         for i, item in enumerate(seq):
                             item_path = f"{name_path}[{i}] › "
                             rows.append({
-                                "tag": tag_s,
-                                "keyword": f"Item {i}",
-                                "path": f"{name_path}[{i}]",
-                                "vr": "ITEM",
-                                "value": f"— item #{i} —",
-                                "is_seq": True,
-                                "depth": path_prefix.count(" › ") + 1,
+                                "tag": tag_s, "keyword": f"Item {i}", "path": f"{name_path}[{i}]",
+                                "vr": "ITEM", "value": f"— item #{i} —", "is_seq": True,
+                                "depth": path_prefix.count(" › ") + 1
                             })
                             rows.extend(_walk_dataset(item, item_path))
                 else:
                     rows.append({
-                        "tag": tag_s,
-                        "keyword": kw,
-                        "path": name_path,
-                        "vr": vr,
-                        "value": _fmt_value(elem.value),
-                        "is_seq": False,
-                        "depth": path_prefix.count(" › "),
+                        "tag": tag_s, "keyword": kw, "path": name_path, "vr": vr,
+                        "value": _fmt_value(elem.value), "is_seq": False,
+                        "depth": path_prefix.count(" › ")
                     })
             return rows
 
         elements = _walk_dataset(ds)
+        meta_rows = _walk_dataset(ds.file_meta, "FileMeta › ") if hasattr(ds, "file_meta") and ds.file_meta else []
 
-        # Infos fichier + file_meta
-        meta_rows = []
-        if hasattr(ds, "file_meta") and ds.file_meta:
-            meta_rows = _walk_dataset(ds.file_meta, "FileMeta › ")
+        # Recherche directe de l'énergie pour rassurer l'utilisateur
+        detected_energy = None
+        for r in elements:
+            if r.get("keyword") == "NominalBeamEnergy" or "(300A,0114)" in r.get("tag", ""):
+                detected_energy = r.get("value")
+                break
 
         return jsonify({
             "status": "success",
-            "file_name": os.path.basename(scan.file_path),
-            "file_path": scan.file_path,
+            "file_name": os.path.basename(selected_path),
+            "file_path": selected_path,
             "modality": str(getattr(ds, "Modality", "") or ""),
             "sop_class": str(getattr(ds, "SOPClassUID", "") or ""),
             "n_elements": len(elements) + len(meta_rows),
+            "detected_energy": detected_energy,
+            "available_files": available_scans,
             "file_meta": meta_rows,
             "elements": elements,
         })
-    except ImportError:
-        return jsonify({"error": "Bibliothèque pydicom non installée (pip install pydicom)"}), 500
     except Exception as e:
         return jsonify({"error": f"Erreur de lecture DICOM : {str(e)}"}), 500
