@@ -350,26 +350,43 @@
             const extStatus = r.ext_status || {};
             let extCells = '';
 
-            // --- GESTION DES COCHES VERTES ET BOUTON DICOM ---
+            // --- GESTION DES COCHES VERTES, BOUTON DICOM ET PASTILLES (BADGES) ---
             exts.forEach(ext => {
                 let cell = extStatus[ext];
+
+                // Fallback de sécurité
                 if (cell === undefined || cell === null) {
                     if (ext === '.dcm' && r.dcm !== undefined) cell = r.dcm;
                     else if (ext === '.pdf' && r.pdf !== undefined) cell = r.pdf;
-                    else cell = '<span class="text-slate-400 font-normal">-</span>';
                 }
 
-                if (cell === true) {
+                // Si on a trouvé des fichiers (> 0) ou si c'est "true" (rétrocompatibilité)
+                if ((typeof cell === 'number' && cell > 0) || cell === true) {
+                    const count = (typeof cell === 'number') ? cell : 1;
+
+                    // On crée une pastille uniquement si count > 1
+                    const badge = count > 1
+                        ? `<span class="absolute -top-1.5 -right-2 bg-slate-700 text-white text-[9px] leading-none font-bold px-1 py-0.5 rounded-full shadow-sm z-10">${count}</span>`
+                        : '';
+
                     // Si c'est un DICOM, on rend la coche cliquable
                     if (ext.toLowerCase() === '.dcm') {
-                        cell = `<button onclick="openDicomModal('${r.patient_id || r.ipp}')" title="Voir les données DICOM" class="hover:scale-125 transition-transform">
-                                   <i class="fa-solid fa-circle-check text-emerald-500 text-sm cursor-pointer shadow-sm rounded-full bg-white"></i>
+                        cell = `<button onclick="openDicomModal('${r.patient_id || r.ipp}')" title="Voir les données DICOM (${count} fichier(s))" class="relative inline-flex items-center justify-center hover:scale-110 transition-transform">
+                                   <i class="fa-solid fa-circle-check text-emerald-500 text-base shadow-sm rounded-full bg-white relative z-0"></i>
+                                   ${badge}
                                </button>`;
                     } else {
-                        cell = '<i class="fa-solid fa-circle-check text-emerald-500 text-sm"></i>';
+                        // Coche verte non cliquable avec pastille potentielle
+                        cell = `<div class="relative inline-flex items-center justify-center" title="${count} fichier(s) trouvé(s)">
+                                    <i class="fa-solid fa-circle-check text-emerald-500 text-base relative z-0"></i>
+                                    ${badge}
+                                </div>`;
                     }
+                } else {
+                    // Aucun fichier = tiret gris
+                    cell = '<span class="text-slate-300 font-normal">-</span>';
                 }
-                if (cell === false) cell = '<span class="text-slate-400 font-normal">-</span>';
+
                 extCells += `<td class="p-2 text-center text-sm">${cell}</td>`;
             });
 

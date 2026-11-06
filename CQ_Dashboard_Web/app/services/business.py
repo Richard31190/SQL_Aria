@@ -343,28 +343,31 @@ def _fmt_dt_short(value):
 
 
 def _ext_status_for_scans(scans, configured_extensions: list) -> dict:
-    found = set()
+    """Compte le nombre de fichiers trouvés par extension."""
+    counts = {}
     for s in scans:
+        # Récupère l'extension propre (ex: '.dcm')
         ft = _normalize_ext(s.file_type or "")
-        if ft:
-            found.add(ft)
         if getattr(s, "file_name", None):
             ft2 = _normalize_ext(os.path.splitext(s.file_name)[1])
-            if ft2:
-                found.add(ft2)
-        if getattr(s, "file_path", None):
+            if ft2: ft = ft2
+        if not ft and getattr(s, "file_path", None):
             ft3 = _normalize_ext(os.path.splitext(s.file_path)[1])
-            if ft3:
-                found.add(ft3)
+            if ft3: ft = ft3
+            
+        if ft:
+            counts[ft] = counts.get(ft, 0) + 1
 
     parsed_configured = _parse_extensions(configured_extensions) or [".dcm", ".pdf"]
     status = {}
     for ext in parsed_configured:
-        is_found = ext in found
-        status[ext] = is_found
-        status[ext.lstrip(".")] = is_found
-        status[ext.upper()] = is_found
-        status[ext.lstrip(".").upper()] = is_found
+        # Assigne le nombre d'occurrences (0 si aucun)
+        c = counts.get(ext, 0)
+        status[ext] = c
+        status[ext.lstrip(".")] = c
+        status[ext.upper()] = c
+        status[ext.lstrip(".").upper()] = c
+        
     return status
 
 
