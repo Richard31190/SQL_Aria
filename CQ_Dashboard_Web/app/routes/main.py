@@ -7,6 +7,7 @@ from app.services.business import (
     build_dashboard_data,
     perform_network_scan,
     get_configured_extensions,
+    get_db_last_update_time,  # <--- Ajouté ici
 )
 
 GLOBAL_KEYS = [
@@ -46,6 +47,7 @@ def get_data():
             "status": "success",
             "timestamp": request.args.get("_t"),
             "phantom": data.get("phantom", ""),
+            "db_last_update": get_db_last_update_time(),
             "main_rows": data.get("main_rows", []),
             "prep_rows": data.get("prep_rows", []),
             "counts": data.get("counts", {}),

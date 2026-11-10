@@ -200,6 +200,103 @@ def get_mysql_connection(cfg: dict = None):
 
     raise RuntimeError("Aucun driver MySQL (mysql-connector-python ou pymysql).")
 
+import os
+from datetime import datetime
+
+def get_db_last_update_time():
+    """
+    Dernière actualisation réelle de la base SQL ARIA (miroir MySQL),
+    comme l'ancien DashboardData.last_db_update.
+    Retourne un dict: {"display": "...", "iso": "...", "age_min": float|null}
+    """
+    now = datetime.now()
+    last = None
+
+    try:
+        cfg = get_aria_mysql_config()
+        conn, cursor = get_mysql_connection(cfg)
+        try:
+            # Même esprit que l'ancien SqlWorker : horodatage le plus récent vu en base
+            # On prend le max sur les tables régulièrement écrites par le sync ARIA
+            cursor.execute(
+                """
+                SELECT MAX(ts) AS max_date FROM (
+                    SELECT MAX(last_updated) AS ts FROM tasks
+                    UNION ALL
+                    SELECT MAX(last_updated) AS ts FROM appointments
+                ) t
+                """
+            )
+            res = cursor.fetchone()
+            if res:
+                last = res.get("max_date") if isinstance(res, dict) else res[0]
+        finally:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[DB last update] Erreur MySQL: {e}")
+        # Fallback : si la requête multi-tables échoue (colonne absente), tenter tasks seul
+        try:
+            cfg = get_aria_mysql_config()
+            conn, cursor = get_mysql_connection(cfg)
+            try:
+                cursor.execute("SELECT MAX(last_updated) AS max_date FROM tasks")
+                res = cursor.fetchone()
+                if res:
+                    last = res.get("max_date") if isinstance(res, dict) else res[0]
+            finally:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception as e2:
+            print(f"[DB last update] Fallback tasks KO: {e2}")
+
+    if not last:
+        return {
+            "display": "Inconnue",
+            "iso": None,
+            "age_min": None,
+            "level": "unknown",
+        }
+
+    if not isinstance(last, datetime):
+        try:
+            last = datetime.fromisoformat(str(last))
+        except Exception:
+            return {
+                "display": str(last),
+                "iso": None,
+                "age_min": None,
+                "level": "unknown",
+            }
+
+    age_min = (now - last).total_seconds() / 60.0
+    if age_min > 15:
+        level = "critical"
+    elif age_min > 10:
+        level = "alert"
+    elif age_min > 5:
+        level = "warning"
+    else:
+        level = "ok"
+
+    return {
+        "display": last.strftime("%d/%m/%Y à %H:%M:%S"),
+        "iso": last.isoformat(sep=" ", timespec="seconds"),
+        "age_min": round(age_min, 1),
+        "level": level,
+    }
 
 def extract_ipp_candidates(text: str) -> list:
     if not text:
