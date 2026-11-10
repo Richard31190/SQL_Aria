@@ -845,6 +845,7 @@ def _fetch_aria_activity_rows(lookback_days: int) -> list:
     query = """
         SELECT
             t.id                                            AS task_id,
+            t.careplan_id                                   AS careplan_id,
             COALESCE(p.ipp, CAST(p.id AS CHAR))             AS patient_id,
             COALESCE(p.family_name_official, '')            AS last_name,
             COALESCE(p.given, '')                           AS first_name,
@@ -855,7 +856,7 @@ def _fetch_aria_activity_rows(lookback_days: int) -> list:
                 SELECT a.start_scheduled_period
                 FROM appointments a
                 WHERE a.patient_id = p.id
-                  AND LOWER(COALESCE(a.service_type, '')) LIKE 'met%%'
+                  AND LOWER(COALESCE(a.service_type, '')) LIKE 'met%'
                   AND LOWER(COALESCE(a.status, '')) NOT IN ('cancelled', 'canceled', 'deleted')
                 ORDER BY
                     CASE
@@ -906,6 +907,9 @@ def _fetch_aria_activity_rows(lookback_days: int) -> list:
     except Exception as e:
         print(f"[ARIA MySQL] Erreur CQ : {e}")
     return []
+
+
+
 
 
 # ===========================================================================
@@ -1578,9 +1582,7 @@ def build_dashboard_data(tab_name=None) -> dict:
 
     scandidos_sig = settings.get("SCANDIDOS_SIGNATURE", "114358")
 
-    # ---------------------------------------------------------------
-    # GESTION DES SCANS RÉSEAU (Synchrone si 0 ligne, Asynchrone ensuite)
-    # ---------------------------------------------------------------
+    # GESTION DES SCANS RÉSEAU
     cache_count = ScanCache.query.count()
     if cache_count == 0:
         perform_network_scan()
@@ -1596,7 +1598,6 @@ def build_dashboard_data(tab_name=None) -> dict:
     tabs = CQTab.query.order_by(CQTab.display_order).all()
     machines = CQMachine.query.order_by(CQMachine.display_order).all()
 
-    # Déterminer l'onglet actif et son phantom (matériel CQ)
     current_tab = None
     if tab_name:
         for t in tabs:
@@ -1611,14 +1612,40 @@ def build_dashboard_data(tab_name=None) -> dict:
         cfg = current_tab._get_config() if hasattr(current_tab, "_get_config") else {}
         current_phantom = str(cfg.get("phantom", "") or "").strip()
 
-    # Programme du jour (Timeplanner)
     timeplanner_ipps = _fetch_timeplanner_cq_ipps_today(tabs)
-
     configured_extensions = get_configured_extensions(tab_name if tab_name else None)
-
     raw_rows = _fetch_aria_activity_rows(lookback_days)
 
-    # INDEXATION EN MÉMOIRE DE LA BASE CACHE
+    # Récupération sécurisée et non-bloquante du préparateur (physicien)
+    physicists_by_cp = {}
+    careplan_ids = list(set(r.get("careplan_id") for r in raw_rows if r.get("careplan_id")))
+    if careplan_ids:
+        try:
+            cfg = get_aria_mysql_config()
+            conn, cursor = get_mysql_connection(cfg)
+            try:
+                ph_placeholders = ",".join(["%s"] * len(careplan_ids))
+                q_phys = f"""
+                    SELECT careplan_id, COALESCE(recipient, '') AS physicist
+                    FROM tasks
+                    WHERE careplan_id IN ({ph_placeholders})
+                      AND LOWER(COALESCE(display_focus, '')) LIKE 'finalisation%%'
+                """
+                cursor.execute(q_phys, careplan_ids)
+                for pr in cursor.fetchall() or []:
+                    cp_id = pr.get("careplan_id") if isinstance(pr, dict) else pr[0]
+                    phys = pr.get("physicist") if isinstance(pr, dict) else pr[1]
+                    if cp_id and phys:
+                        physicists_by_cp[cp_id] = phys
+            finally:
+                try: cursor.close()
+                except Exception: pass
+                try: conn.close()
+                except Exception: pass
+        except Exception as e_phys:
+            print(f"[ARIA MySQL] Note physicien (non-bloquant) : {e_phys}")
+
+    # INDEXATION CACHE
     all_scans = ScanCache.query.all()
     scans_by_ipp = defaultdict(list)
     for sc in all_scans:
@@ -1638,13 +1665,14 @@ def build_dashboard_data(tab_name=None) -> dict:
             continue
 
         task_id = str(row.get("task_id") or "0")
+        cp_id = row.get("careplan_id")
         last_name = row.get("last_name") or ""
         first_name = row.get("first_name") or ""
         display_focus = row.get("display_focus") or ""
         status = str(row.get("status") or "ready")
         localisation = row.get("localisation") or "Non spécifié"
         comment = row.get("comment") or ""
-        scheduled = row.get("scheduled_start")  # = date MET
+        scheduled = row.get("scheduled_start")
 
         if not _is_cq_ready_task(display_focus, status):
             continue
@@ -1676,10 +1704,6 @@ def build_dashboard_data(tab_name=None) -> dict:
         full_path = _full_path_from_scans(scans, fallback="") if scans else ""
         detected_energy = _energy_from_scans(scans, fallback=default_energy)
 
-        # ------------------------------------------------------------------
-        # EXTRACTION SCANDIDOS — UNIQUEMENT pour les patients AFFICHÉS
-        # et UNIQUEMENT si le matériel de l'onglet est Delta 4
-        # ------------------------------------------------------------------
         delta4_dur, delta4_frac = None, None
         matched_cfg = matched_tab._get_config() if hasattr(matched_tab, "_get_config") else {}
         matched_phantom = str(matched_cfg.get("phantom", "") or "").strip()
@@ -1719,11 +1743,14 @@ def build_dashboard_data(tab_name=None) -> dict:
                 met_color = "bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-900/10 dark:text-emerald-300 dark:border-emerald-900"
 
         row_unique_key = f"{ipp}_{task_id}"
+        physicist_val = physicists_by_cp.get(cp_id, "")
+
         main_by_key[row_unique_key] = {
             "patient_id": ipp,
             "task_id": task_id,
             "last_name": last_name,
             "first_name": first_name,
+            "physicist": physicist_val,
             "localisation": localisation if localisation else "Non spécifié",
             "ext_status": ext_status,
             "folder": folder_name,
@@ -1758,7 +1785,6 @@ def build_dashboard_data(tab_name=None) -> dict:
         prep_rows.append(pr)
 
     next_cq_slots = _fetch_next_cq_slots(tab_name)
-
     machine_schedule = _fetch_machine_schedule_today(tab_name)
 
     return {
