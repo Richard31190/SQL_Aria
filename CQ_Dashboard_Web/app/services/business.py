@@ -334,19 +334,15 @@ def find_patient_folder_info(dirpath: str, root_path: str):
 
 
 def find_tab_for_focus(focus_text: str, tabs: list):
+    """Trouve l'onglet correspondant à un nom de machine/device ARIA."""
     if not focus_text:
         return None
     for tab in tabs:
-        aria_names = (
-            tab.get_aria_keywords()
-            if hasattr(tab, "get_aria_keywords")
-            else [x.strip() for x in (tab.name or "").split(",") if x.strip()]
-        )
-        for kw in aria_names:
+        kws = _get_tab_keywords(tab)
+        for kw in kws:
             if match_tab_keyword(kw, focus_text):
                 return tab
     return None
-
 
 def _get_tab_keywords(tab) -> list:
     """Extrait tous les mots-clés d'un CQTab pour le matching ARIA (device)."""
@@ -1202,67 +1198,180 @@ def _fetch_imminent_prep_rows(lookback_days: int, tabs: list) -> list:
 # Point d'entrée Dashboard
 # ===========================================================================
 
-def _fetch_next_cq_slot(tab_name):
+def _is_any_cq(service: str, last_name: str, first_name: str, patient_id) -> bool:
     """
-    Récupère l'heure du prochain créneau de CQ physique/patient pour la machine ciblée.
-    Totalement dynamique : se base sur la configuration des onglets enregistrée en Administration.
+    Détermine si une activité / RDV ARIA est un Contrôle Qualité (CQ Physique, Patient, Hebdo...).
     """
-    if not tab_name:
-        return None
+    pid_str = str(patient_id or "").strip()
+    if pid_str in ("3", "cq"):
+        return True
 
-    tab = CQTab.query.filter_by(label=tab_name).first()
+    text = f"{service} {last_name} {first_name}".lower()
+    text_norm = normalize(text)
+
+    cq_keywords = [
+        "cq", "qa", "hebdo", "hebdomadaire", "physique",
+        "qualite", "controle"
+    ]
+    return any(kw in text_norm for kw in cq_keywords) or any(kw in text for kw in cq_keywords)
+
+
+def _fetch_next_cq_slots(tab_name):
+    """
+    Récupère le créneau CQ à venir ou en cours le plus significatif du jour
+    pour chaque machine de l'onglet actif.
+    Exclut automatiquement les créneaux dont l'heure est déjà révolue.
+    """
+    now = datetime.now()
+    tabs = CQTab.query.order_by(CQTab.display_order).all()
+    tab = None
+
+    if tab_name:
+        for t in tabs:
+            if (
+                t.label == tab_name
+                or t.name == tab_name
+                or normalize(t.label) == normalize(tab_name)
+                or normalize(getattr(t, "name", "")) == normalize(tab_name)
+            ):
+                tab = t
+                break
+
+    if not tab and tabs:
+        tab = tabs[0]
+
     if not tab:
-        return None
+        print("[Créneau CQ] Aucun onglet disponible.")
+        return []
 
     cfg = get_aria_mysql_config()
-
-    sql = """
-        SELECT
-            a.start_scheduled_period AS start_time,
-            COALESCE(a.device, '') AS device
-        FROM appointments a
-        JOIN patients p ON a.patient_id = p.id
-        WHERE a.start_scheduled_period >= NOW()
-          AND a.start_scheduled_period < CURDATE() + INTERVAL 1 DAY
-          AND (
-              p.family_name_official LIKE '%CQ HEBDOMADAIRE%'
-              OR p.id = 3
-          )
-          AND LOWER(COALESCE(a.status, '')) IN ('booked', 'arrived')
-        ORDER BY a.start_scheduled_period ASC
-    """
-
     conn = cursor = None
-    rows = []
+    appts_by_device = defaultdict(list)
+
     try:
         conn, cursor = get_mysql_connection(cfg)
+
+        sql = """
+            SELECT
+                a.id AS appt_id,
+                a.start_scheduled_period AS start_time,
+                a.end_scheduled_period AS end_time,
+                COALESCE(a.device, '') AS device,
+                COALESCE(a.service_type, '') AS service,
+                COALESCE(p.family_name_official, '') AS last_name,
+                COALESCE(p.given, '') AS first_name,
+                a.patient_id AS appt_patient_id,
+                p.id AS patient_db_id
+            FROM appointments a
+            LEFT JOIN patients p ON a.patient_id = p.id
+            WHERE a.start_scheduled_period >= CURDATE()
+              AND a.start_scheduled_period < CURDATE() + INTERVAL 1 DAY
+              AND LOWER(COALESCE(a.status, '')) NOT IN ('cancelled', 'canceled', 'deleted', 'noshow')
+            ORDER BY a.start_scheduled_period ASC
+        """
         cursor.execute(sql)
         rows = cursor.fetchall() or []
+
+        for r in rows:
+            if isinstance(r, dict):
+                appt_id = r.get("appt_id")
+                start_time = r.get("start_time")
+                end_time = r.get("end_time")
+                device_name = str(r.get("device") or "").strip()
+                service = str(r.get("service") or "").strip()
+                last_name = str(r.get("last_name") or "").strip()
+                first_name = str(r.get("first_name") or "").strip()
+                patient_id = r.get("appt_patient_id") or r.get("patient_db_id")
+            else:
+                appt_id, start_time, end_time, device_name, service, last_name, first_name, appt_pid, p_db_id = r[:9]
+                device_name = str(device_name or "").strip()
+                patient_id = appt_pid or p_db_id
+
+            if not device_name or not find_tab_for_focus(device_name, [tab]):
+                continue
+
+            duration_min = 0
+            if isinstance(start_time, datetime) and isinstance(end_time, datetime):
+                duration_min = max(0, (end_time - start_time).total_seconds() / 60.0)
+
+            is_cq = _is_any_cq(service, last_name, first_name, patient_id)
+
+            appts_by_device[device_name].append({
+                "appt_id": appt_id,
+                "start_time": start_time,
+                "end_time": end_time,
+                "device": device_name,
+                "service": service,
+                "duration": duration_min,
+                "is_cq": is_cq
+            })
+
     except Exception as e:
-        print(f"[ARIA MySQL] Erreur créneau CQ : {e}")
-        return None
+        print(f"[ARIA MySQL] Erreur calcul créneaux CQ : {e}")
+        return []
     finally:
         try:
-            if cursor:
-                cursor.close()
-        except Exception:
-            pass
-        try:
-            if conn:
-                conn.close()
-        except Exception:
-            pass
+            if cursor: cursor.close()
+            if conn: conn.close()
+        except Exception: pass
 
-    for r in rows:
-        device_name = str(
-            r.get("device") if isinstance(r, dict) else (r[1] if len(r) > 1 else "")
-        ).strip()
-        start_time = r.get("start_time") if isinstance(r, dict) else r[0]
+    results = []
 
-        if device_name and find_tab_for_focus(device_name, [tab]):
-            return start_time
+    for device_name, dev_appts in appts_by_device.items():
+        # FILTRE : Ne garder que les créneaux CQ en cours ou FUTURS (heure de fin > maintenant)
+        upcoming_cq_appts = []
+        for a in dev_appts:
+            if not a["is_cq"]:
+                continue
 
-    return None
+            end_t = a["end_time"]
+            start_t = a["start_time"]
+
+            # Si le créneau est déjà terminé à l'heure actuelle -> ignoré
+            if isinstance(end_t, datetime) and end_t <= now:
+                continue
+            # Si pas d'heure de fin mais que l'heure de début est passée depuis > 30 min -> ignoré
+            elif isinstance(start_t, datetime) and not isinstance(end_t, datetime) and start_t + timedelta(minutes=30) <= now:
+                continue
+
+            upcoming_cq_appts.append(a)
+
+        if not upcoming_cq_appts:
+            continue
+
+        # Prendre le créneau CQ le plus long parmi ceux qui sont à venir / en cours
+        longest_cq = sorted(upcoming_cq_appts, key=lambda x: (-x["duration"], x["start_time"]))[0]
+
+        interrupted = False
+        cq_start = longest_cq["start_time"]
+        cq_end = longest_cq["end_time"]
+
+        if isinstance(cq_start, datetime) and isinstance(cq_end, datetime):
+            for other in dev_appts:
+                if other["appt_id"] == longest_cq["appt_id"] or other["is_cq"]:
+                    continue
+
+                o_start = other["start_time"]
+                o_end = other["end_time"]
+
+                if isinstance(o_start, datetime) and isinstance(o_end, datetime):
+                    if o_start < cq_end and o_end > cq_start:
+                        interrupted = True
+                        break
+
+        results.append({
+            "time": _fmt_time_only(longest_cq["start_time"]),
+            "device": device_name,
+            "interrupted": interrupted,
+            "start_time": longest_cq["start_time"]
+        })
+
+    results.sort(key=lambda x: x["start_time"] if isinstance(x["start_time"], datetime) else datetime.max)
+
+    for r in results:
+        r.pop("start_time", None)
+
+    return results
 
 
 def _fmt_time_only(val) -> str:
@@ -1648,8 +1757,7 @@ def build_dashboard_data(tab_name=None) -> dict:
             continue
         prep_rows.append(pr)
 
-    next_slot_dt = _fetch_next_cq_slot(tab_name)
-    next_slot_str = _fmt_time_only(next_slot_dt) if next_slot_dt else None
+    next_cq_slots = _fetch_next_cq_slots(tab_name)
 
     machine_schedule = _fetch_machine_schedule_today(tab_name)
 
@@ -1659,7 +1767,7 @@ def build_dashboard_data(tab_name=None) -> dict:
         "counts": counts,
         "configured_extensions": configured_extensions,
         "scan_interval_min": scan_interval_min,
-        "next_cq_slot": next_slot_str,
+        "next_cq_slots": next_cq_slots, 
         "machine_schedule": machine_schedule,
         "phantom": current_phantom,
     }

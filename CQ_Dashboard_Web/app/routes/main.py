@@ -34,7 +34,7 @@ def index():
         default_tab=default_tab,
         configured_extensions=configured_extensions,
         machine_schedule=initial_data.get("machine_schedule", []),
-        next_cq_slot=initial_data.get("next_cq_slot"),
+        next_cq_slot=initial_data.get("next_cq_slots"),
     )
 
 @main_bp.route("/api/data")
@@ -53,7 +53,7 @@ def get_data():
             "counts": data.get("counts", {}),
             "configured_extensions": data.get("configured_extensions", []),
             "scan_interval_min": data.get("scan_interval_min", 3),
-            "next_cq_slot": data.get("next_cq_slot"),
+            "next_cq_slots": data.get("next_cq_slots"),
             "machine_schedule": data.get("machine_schedule", []),
         }
     )

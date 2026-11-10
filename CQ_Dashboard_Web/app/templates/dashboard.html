@@ -92,11 +92,9 @@
         <!-- Footer : Prochain Créneau + Temps Estimé -->
         <div class="p-4 bg-slate-50 dark:bg-slate-900/80 border-t border-slate-200 dark:border-slate-700 flex justify-end items-center gap-4">
 
-            <!-- Badge Prochain créneau CQ (masqué par défaut si aucun créneau) -->
-            <div id="next-cq-slot-container" class="hidden flex items-center gap-2 px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg border border-indigo-200 shadow-sm text-sm font-medium transition-all">
-                <i class="fa-regular fa-clock fa-spin-pulse" style="--fa-animation-duration: 3s;"></i>
-                <span>Prochain créneau CQ :</span>
-                <span id="next-cq-slot-time" class="font-bold text-indigo-900"></span>
+            <!-- Badges Prochains créneaux CQ : un badge par machine, généré par JS -->
+            <div id="next-cq-slot-container" class="hidden flex flex-wrap items-center gap-3">
+                <!-- Contenu injecté par JavaScript -->
             </div>
 
             <!-- Temps estimé -->
@@ -376,13 +374,42 @@
                 renderPrepTable(data.prep_rows || []);
                 renderMiniCalendar(data.main_rows || []);
 
+                
+                // --- Prochains créneaux CQ : 1 badge par machine + alerte si écourté ---
                 const slotContainer = document.getElementById('next-cq-slot-container');
-                const slotTime = document.getElementById('next-cq-slot-time');
-                if (data.next_cq_slot) {
-                    slotTime.innerText = data.next_cq_slot;
-                    slotContainer.classList.remove('hidden');
-                } else {
-                    slotContainer.classList.add('hidden');
+                if (slotContainer) {
+                    const slots = data.next_cq_slots || []; // <-- 'next_cq_slots' avec un S
+
+                    if (slots.length > 0) {
+                        slotContainer.innerHTML = slots.map(slot => {
+                            const interrupted = !!slot.interrupted;
+
+                            const wrapperCls = interrupted
+                                ? 'bg-red-50 text-red-800 border-red-300 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800'
+                                : 'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800';
+
+                            const timeCls = interrupted
+                                ? 'text-red-900 dark:text-red-200'
+                                : 'text-indigo-900 dark:text-indigo-200';
+
+                            const warning = interrupted
+                                ? `<span class="ml-1 px-1.5 py-0.5 bg-red-100 dark:bg-red-900/60 text-red-700 dark:text-red-200 border border-red-300 dark:border-red-700 rounded text-[9px] font-bold uppercase tracking-wider" title="Un traitement patient empiète sur ce créneau CQ : durée réduite !"><i class="fa-solid fa-triangle-exclamation mr-0.5"></i>Écourté</span>`
+                                : '';
+
+                            return `
+                <div class="flex items-center gap-2 px-3 py-1.5 rounded-lg border shadow-sm text-sm font-medium transition-all ${wrapperCls}">
+                    <i class="fa-regular fa-clock fa-spin-pulse" style="--fa-animation-duration: 3s;"></i>
+                    <span>CQ ${slot.device || ''} :</span>
+                    <span class="font-bold ${timeCls}">${slot.time || ''}</span>
+                    ${warning}
+                </div>`;
+                        }).join('');
+
+                        slotContainer.classList.remove('hidden');
+                    } else {
+                        slotContainer.innerHTML = '';
+                        slotContainer.classList.add('hidden');
+                    }
                 }
 
                 if (data.scan_interval_min !== undefined) {
@@ -674,9 +701,7 @@
         if (e.target === this) closeDicomModal();
     });
 
-    document.getElementById('dicom-modal')?.addEventListener('click', function (e) {
-        if (e.target === this) closeDicomModal();
-    });
+
     // ------------------------------------
 
     const tableBody = document.getElementById('dashboard-table-body');
