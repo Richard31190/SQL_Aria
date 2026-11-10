@@ -1,5 +1,20 @@
 # -*- coding: utf-8 -*-
 # *** routes/main.py ***
+
+# ==============================================================================
+# COMMANDES DE COMPILATION PYINSTALLER (PowerShell) :
+#
+# Emplacement du projet : C:\Users\boisseron\source\repos\SQL Aria\CQ_Dashboard_Web
+#
+# 1. Ouvrir PowerShell et se placer dans le dossier du projet :
+# cd "C:\Users\boisseron\source\repos\SQL Aria\CQ_Dashboard_Web"
+#
+# 2. Nettoyage des anciens fichiers de build :
+# Remove-Item -Recurse -Force build, dist, *.spec -ErrorAction SilentlyContinue
+#
+# 3. Compilation sur une seule ligne :
+# pyinstaller --noconfirm --clean --onedir --console --name "CQ_Dashboard" --hidden-import=flask_sqlalchemy --hidden-import=sqlalchemy --hidden-import=sqlalchemy.dialects.sqlite --hidden-import=mysql.connector --hidden-import=pydicom --hidden-import=dotenv --collect-all flask_sqlalchemy --collect-all sqlalchemy --collect-all pydicom --add-data "app/templates;app/templates" --add-data "app/static;app/static" run.py
+# ==============================================================================
 import os
 from flask import Blueprint, render_template, jsonify, request
 from app.models_local import CQTab, CQMachine, Setting, ScanCache
