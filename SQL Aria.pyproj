@@ -45,6 +45,7 @@
     <Content Include="CQ_Dashboard_Web\app\routes\__pycache__\main.cpython-313.pyc" />
     <Content Include="CQ_Dashboard_Web\app\services\__pycache__\business.cpython-313.pyc" />
     <Content Include="CQ_Dashboard_Web\app\services\__pycache__\__init__.cpython-313.pyc" />
+    <Content Include="CQ_Dashboard_Web\app\static\favicon.svg" />
     <Content Include="CQ_Dashboard_Web\app\templates\admin\index.html" />
     <Content Include="CQ_Dashboard_Web\app\templates\admin\login.html" />
     <Content Include="CQ_Dashboard_Web\app\templates\base.html" />
