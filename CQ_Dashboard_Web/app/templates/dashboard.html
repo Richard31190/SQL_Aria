@@ -463,14 +463,14 @@
 
                     if (ext.toLowerCase() === '.dcm') {
                         cell = `<button onclick="openDicomModal('${r.patient_id || r.ipp}')" title="Voir les données DICOM (${count} fichier(s))" class="relative inline-flex items-center justify-center hover:scale-110 transition-transform">
-                                   <i class="fa-solid fa-circle-check text-emerald-500 text-base shadow-sm rounded-full bg-white relative z-0"></i>
-                                   ${badge}
-                               </button>`;
+                               <i class="fa-solid fa-circle-check text-emerald-500 text-base shadow-sm rounded-full bg-white relative z-0"></i>
+                               ${badge}
+                           </button>`;
                     } else {
                         cell = `<div class="relative inline-flex items-center justify-center" title="${count} fichier(s) trouvé(s)">
-                                    <i class="fa-solid fa-circle-check text-emerald-500 text-base relative z-0"></i>
-                                    ${badge}
-                                </div>`;
+                                <i class="fa-solid fa-circle-check text-emerald-500 text-base relative z-0"></i>
+                                ${badge}
+                            </div>`;
                     }
                 } else {
                     cell = '<span class="text-slate-300 font-normal">-</span>';
@@ -505,36 +505,69 @@
 
             const locDisplay = (isDelta && r.delta4_fraction) ? r.delta4_fraction : (r.localisation || '');
 
+            // --- Chemin dossier + bouton copier ---
+            const fullPathRaw = (r.full_path && r.full_path !== '-' && r.full_path !== '—')
+                ? String(r.full_path)
+                : '';
+            const folderDisplay = r.folder || '-';
+            // Échappement pour l'attribut JS inline (antislashs Windows + quotes)
+            const fullPathEscaped = fullPathRaw
+                .replace(/\\/g, '\\\\')
+                .replace(/'/g, "\\'")
+                .replace(/"/g, '&quot;');
+
+            let folderCell;
+            if (fullPathRaw) {
+                folderCell = `
+            <td class="p-2 text-[10px] text-slate-500 dark:text-slate-400 font-mono tracking-tighter max-w-[140px]">
+                <div class="flex items-center gap-1 group">
+                    <span class="truncate" title="${fullPathRaw.replace(/"/g, '&quot;')}">${folderDisplay}</span>
+                    <button type="button"
+                            onclick="copyToClipboard('${fullPathEscaped}', this)"
+                            class="flex-shrink-0 p-0.5 rounded text-slate-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 transition-colors opacity-60 group-hover:opacity-100"
+                            title="Copier le chemin complet">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                        </svg>
+                    </button>
+                </div>
+            </td>`;
+            } else {
+                folderCell = `
+            <td class="p-2 text-[10px] text-slate-500 dark:text-slate-400 font-mono tracking-tighter truncate max-w-[120px]" title="${folderDisplay}">
+                ${folderDisplay}
+            </td>`;
+            }
+
             const tr = document.createElement('tr');
             tr.className = `${r.met_color || ''} hover:brightness-95 transition-all`;
             tr.innerHTML = `
-            <td class="p-2 text-center">
-                <input type="checkbox" class="row-checkbox rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer"
-                       data-key="${rowKey}"
-                       ${isChecked ? 'checked' : ''}
-                       data-acq="${acqForCalc}"
-                       data-mount="${r.mount_duration ?? r.mount_minutes ?? 0}"
-                       data-tech="${techniqueKey.replace(/"/g, '&quot;')}">
-            </td>
-            <td class="p-2 font-mono text-slate-900 dark:text-white font-bold">${patientId}</td>
-            <td class="p-2 uppercase font-semibold">${r.last_name || r.nom || ''}</td>
-            <td class="p-2 capitalize">${r.first_name || r.prenom || ''}</td>
-            <td class="p-2 font-semibold text-indigo-700 dark:text-indigo-400">${locDisplay}</td>
-            ${durationCell}
-            ${extCells}
-            <td class="p-2 text-[10px] text-slate-500 dark:text-slate-400 font-mono tracking-tighter truncate max-w-[120px]" title="${r.full_path && r.full_path !== '-' ? r.full_path : (r.folder || '')}">
-            ${r.folder || '-'}</td>
-            <td class="p-2 font-mono font-medium">${r.met_date || r.met || ''}</td>
-            <td class="p-2 font-semibold text-amber-600 dark:text-amber-400">${r.energy || r.energie || ''}</td>
-            <td class="p-2 text-slate-600 dark:text-slate-400 text-[11px] max-w-[220px]"
-                title="Acquisition: ${acqForCalc} min | Montage: ${r.mount_duration ?? ''} min">
-                <span class="block truncate" title="${safeTitle}">${techniqueLabel}</span>
-            </td>
-            <td class="p-2 font-medium text-slate-700 dark:text-slate-300">${r.physicist || '—'}</td>
-            <td class="p-2 text-center text-base">${r.timeplanner || ''}</td>
-            <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-slate-700/60">${r.status || r.statut || ''}</span></td>
-            <td class="p-2 text-slate-500 italic text-[11px]">${r.comment || r.commentaire || ''}</td>
-        `;
+        <td class="p-2 text-center">
+            <input type="checkbox" class="row-checkbox rounded text-cyan-600 focus:ring-cyan-500 cursor-pointer"
+                   data-key="${rowKey}"
+                   ${isChecked ? 'checked' : ''}
+                   data-acq="${acqForCalc}"
+                   data-mount="${r.mount_duration ?? r.mount_minutes ?? 0}"
+                   data-tech="${techniqueKey.replace(/"/g, '&quot;')}">
+        </td>
+        <td class="p-2 font-mono text-slate-900 dark:text-white font-bold">${patientId}</td>
+        <td class="p-2 uppercase font-semibold">${r.last_name || r.nom || ''}</td>
+        <td class="p-2 capitalize">${r.first_name || r.prenom || ''}</td>
+        <td class="p-2 font-semibold text-indigo-700 dark:text-indigo-400">${locDisplay}</td>
+        ${durationCell}
+        ${extCells}
+        ${folderCell}
+        <td class="p-2 font-mono font-medium">${r.met_date || r.met || ''}</td>
+        <td class="p-2 font-semibold text-amber-600 dark:text-amber-400">${r.energy || r.energie || ''}</td>
+        <td class="p-2 text-slate-600 dark:text-slate-400 text-[11px] max-w-[220px]"
+            title="Acquisition: ${acqForCalc} min | Montage: ${r.mount_duration ?? ''} min">
+            <span class="block truncate" title="${safeTitle}">${techniqueLabel}</span>
+        </td>
+        <td class="p-2 font-medium text-slate-700 dark:text-slate-300">${r.physicist || '—'}</td>
+        <td class="p-2 text-center text-base">${r.timeplanner || ''}</td>
+        <td class="p-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-slate-700/60">${r.status || r.statut || ''}</span></td>
+        <td class="p-2 text-slate-500 italic text-[11px]">${r.comment || r.commentaire || ''}</td>
+    `;
             tbody.appendChild(tr);
         });
 
@@ -542,6 +575,44 @@
         if (checkAll) checkAll.checked = allChecked;
 
         calculateTime();
+    }
+
+    /** Copie le chemin réseau complet dans le presse-papier */
+    function copyToClipboard(text, button) {
+        if (!text || text === '-' || text === '—') return;
+
+        navigator.clipboard.writeText(text).then(() => {
+            const original = button.innerHTML;
+            button.innerHTML = `
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+            </svg>`;
+            button.classList.add('bg-emerald-50', 'dark:bg-emerald-900/40');
+            button.title = 'Copié !';
+
+            setTimeout(() => {
+                button.innerHTML = original;
+                button.classList.remove('bg-emerald-50', 'dark:bg-emerald-900/40');
+                button.title = 'Copier le chemin complet';
+            }, 1800);
+        }).catch(err => {
+            console.error('Erreur copie presse-papier :', err);
+            // Fallback pour les contextes non-HTTPS / anciens navigateurs
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.left = '-9999px';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                button.title = 'Copié !';
+                setTimeout(() => { button.title = 'Copier le chemin complet'; }, 1800);
+            } catch (e2) {
+                console.error('Fallback copie échoué :', e2);
+            }
+        });
     }
 
 
@@ -1128,5 +1199,7 @@
             }, mins * 60000);
         }
     }
+
+    
 </script>
 {% endblock %}
