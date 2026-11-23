@@ -1,4 +1,3 @@
-# *** app\__init__.py ***
 from flask import Flask
 from config import Config
 from app.models_local import db_local, seed_defaults
@@ -19,6 +18,11 @@ def create_app(config_class=Config):
 
     app.register_blueprint(main_bp)
     app.register_blueprint(admin_bp, url_prefix='/admin')
+
+    # Pré-calcul en arrière-plan : les données de tous les onglets machines sont
+    # rafraîchies périodiquement, même sans navigateur connecté.
+    from app.services.cache import start_background_refresh
+    start_background_refresh(app)
 
     @app.context_processor
     def inject_global_vars():

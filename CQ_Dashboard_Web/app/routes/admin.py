@@ -1,4 +1,3 @@
-﻿# *** routes\admin.py ***
 import os
 import io
 import zipfile
@@ -9,7 +8,7 @@ from app.models_local import db_local, Setting, CQTab, CQMachine
 admin_bp = Blueprint('admin', __name__)
 
 DB_KEYS = ['MYSQL_HOST', 'MYSQL_PORT', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DB']
-GLOBAL_KEYS = ['ADMIN_PASSWORD', 'LOOKBACK_DAYS', 'SCAN_DEPTH', 'SCANDIDOS_SIGNATURE', 'YEAR_OVERLAP_DAYS']
+GLOBAL_KEYS = ['ADMIN_PASSWORD', 'LOOKBACK_DAYS', 'SCAN_DEPTH', 'SCANDIDOS_SIGNATURE', 'YEAR_OVERLAP_DAYS', 'CACHE_REFRESH_SECONDS']
 
 
 @admin_bp.before_request

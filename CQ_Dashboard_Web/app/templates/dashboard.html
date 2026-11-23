@@ -316,7 +316,7 @@
         return FIXED_COLS_BEFORE + (configuredExtensions || []).length + (isDeltaPhantom() ? 1 : 0) + 8;
     }
 
-    function loadData() {
+    function loadData(force = false) {
         const now = new Date();
         const updateSpan = document.getElementById('last-update-time');
         if (updateSpan) {
@@ -325,9 +325,14 @@
             });
         }
 
-        return fetch(`/api/data?tab=${encodeURIComponent(activeTab)}&_t=${Date.now()}`)
+        return fetch(`/api/data?tab=${encodeURIComponent(activeTab)}&_t=${Date.now()}${force ? '&force=1' : ''}`)
             .then(res => res.json())
             .then(data => {
+                if (data.cache_error) console.warn('[cache serveur]', data.cache_error);
+                if (updateSpan && data.cache_age_sec != null) {
+                    updateSpan.title = `Données pré-calculées côté serveur — datant de ${Math.round(data.cache_age_sec)} s`;
+                }
+
                 // --- NOUVEAU : Mise à jour de la date de la base SQL ---
                 // --- Fraîcheur base SQL ARIA (comme update_db_status de l'ancien ui.py) ---
                 const sqlSpan = document.getElementById('sql-update-time');
@@ -414,9 +419,8 @@
                     }
                 }
 
-                if (data.scan_interval_min !== undefined) {
-                    scheduleBackgroundScan(data.scan_interval_min);
-                }
+                // Le scan réseau est déclenché côté serveur (thread de pré-calcul) ;
+                // plus besoin d'un timer par navigateur.
 
                 document.querySelectorAll('.tab-btn').forEach(b => {
                     const c = (data.counts || {})[b.dataset.tab];
@@ -1128,7 +1132,7 @@
 
         fetch('/api/scan', { method: 'POST' })
             .then(res => res.json())
-            .then(data => loadData())
+            .then(data => loadData(true))
             .catch(err => console.error("Erreur scan réseau:", err))
             .finally(() => {
                 setTimeout(() => {
@@ -1155,7 +1159,7 @@
         if (text) text.innerText = 'Actualisation ARIA...';
 
         try {
-            await loadData();
+            await loadData(true);
         } catch (error) {
             console.error("Erreur rafraîchissement ARIA:", error);
         } finally {
@@ -1182,24 +1186,8 @@
     // INITIALISATION
     buildThead(configuredExtensions);
     loadData();
-    setInterval(loadData, 60000);
+    // Rafraîchissement léger : lecture du cache serveur (quasi gratuit)
+    setInterval(() => loadData(false), 20000);
 
-    let backgroundScanTimer = null;
-    function scheduleBackgroundScan(minutes) {
-        if (backgroundScanTimer) clearInterval(backgroundScanTimer);
-        const mins = parseInt(minutes) || 3;
-        if (mins > 0) {
-            backgroundScanTimer = setInterval(() => {
-                fetch('/api/scan', { method: 'POST' })
-                    .then(res => res.json())
-                    .then(res => {
-                        if (res.found_new !== undefined) loadData();
-                    })
-                    .catch(err => console.error('Scan fond erreur:', err));
-            }, mins * 60000);
-        }
-    }
-
-    
 </script>
 {% endblock %}

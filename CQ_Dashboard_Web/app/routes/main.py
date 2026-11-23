@@ -19,11 +19,11 @@ import os
 from flask import Blueprint, render_template, jsonify, request
 from app.models_local import CQTab, CQMachine, Setting, ScanCache
 from app.services.business import (
-    build_dashboard_data,
     perform_network_scan,
     get_configured_extensions,
     get_db_last_update_time,  # <--- Ajouté ici
 )
+from app.services import cache as dashboard_cache
 
 GLOBAL_KEYS = [
     "ADMIN_PASSWORD",
@@ -31,6 +31,7 @@ GLOBAL_KEYS = [
     "SCAN_DEPTH",
     "SCANDIDOS_SIGNATURE",
     "YEAR_OVERLAP_DAYS",
+    "CACHE_REFRESH_SECONDS",
 ]
 
 main_bp = Blueprint("main", __name__)
@@ -40,29 +41,39 @@ def index():
     tabs = CQTab.query.order_by(CQTab.display_order).all()
     default_tab = tabs[0].label if tabs else ""
     configured_extensions = get_configured_extensions()
-    
-    initial_data = build_dashboard_data(default_tab) if default_tab else {}
 
+    # Aucune requête lourde ici : les données sont pré-calculées en arrière-plan
+    # (app/services/cache.py) et servies instantanément par /api/data.
     return render_template(
         "dashboard.html",
         tabs=[t.to_dict() for t in tabs],
         default_tab=default_tab,
         configured_extensions=configured_extensions,
-        machine_schedule=initial_data.get("machine_schedule", []),
-        next_cq_slot=initial_data.get("next_cq_slots"),
+        machine_schedule=[],
+        next_cq_slot=None,
     )
 
 @main_bp.route("/api/data")
 def get_data():
     tab_name = request.args.get("tab") or request.args.get("tab_id")
-    data = build_dashboard_data(tab_name)
-    
+    force = request.args.get("force", "").lower() in ("1", "true", "yes")
+
+    # Lecture instantanée du cache pré-calculé en arrière-plan.
+    # ?force=1 recalcule l'onglet demandé immédiatement (boutons ARIA / Scan réseau).
+    snap = dashboard_cache.get_data(tab_name, force=force)
+    data = snap.get("data") or {}
+
+    db_last_update = snap.get("db_last_update")
+    if db_last_update is None:
+        # Repli : si le cache n'a jamais pu joindre MySQL, tenter une lecture directe
+        db_last_update = get_db_last_update_time()
+
     return jsonify(
         {
             "status": "success",
             "timestamp": request.args.get("_t"),
             "phantom": data.get("phantom", ""),
-            "db_last_update": get_db_last_update_time(),
+            "db_last_update": db_last_update,
             "main_rows": data.get("main_rows", []),
             "prep_rows": data.get("prep_rows", []),
             "counts": data.get("counts", {}),
@@ -70,6 +81,9 @@ def get_data():
             "scan_interval_min": data.get("scan_interval_min", 3),
             "next_cq_slots": data.get("next_cq_slots"),
             "machine_schedule": data.get("machine_schedule", []),
+            "cache_age_sec": snap.get("cache_age_sec"),
+            "cache_refreshed_at": snap.get("cache_refreshed_at"),
+            "cache_error": snap.get("cache_error"),
         }
     )
 
@@ -77,6 +91,21 @@ def get_data():
 def trigger_scan():
     try:
         found = perform_network_scan()
+        # Recalcul immédiat (non bloquant) du cache de tous les onglets après le scan
+        try:
+            import threading
+            from flask import current_app as _current_app
+            _app = _current_app._get_current_object()
+
+            def _refresh_after_scan():
+                try:
+                    dashboard_cache.refresh_all(app=_app)
+                except Exception as _e:
+                    print(f"[Cache] Rafraîchissement après scan KO : {_e}")
+
+            threading.Thread(target=_refresh_after_scan, daemon=True, name="cq-cache-after-scan").start()
+        except Exception as _e:
+            print(f"[Cache] Impossible de lancer le recalcul après scan : {_e}")
         return jsonify({"status": "success", "found_new": found})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500

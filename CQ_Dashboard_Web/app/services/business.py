@@ -1,4 +1,3 @@
-### 1. Fichier : `app/services/business.py`
 # -*- coding: utf-8 -*-
 """
 CQ Dashboard — Logique Métier Précise & Filtrée
@@ -49,6 +48,7 @@ GLOBAL_KEYS = [
     "YEAR_OVERLAP_DAYS",
     "URGENCY_DAYS",
     "NETWORK_SCAN_INTERVAL_MIN",
+    "CACHE_REFRESH_SECONDS",
 ]
 
 
@@ -147,6 +147,7 @@ def get_global_settings() -> dict:
         "YEAR_OVERLAP_DAYS": os.getenv("YEAR_OVERLAP_DAYS", "15"),
         "URGENCY_DAYS": os.getenv("URGENCY_DAYS", "1"),
         "NETWORK_SCAN_INTERVAL_MIN": os.getenv("NETWORK_SCAN_INTERVAL_MIN", "3"),
+        "CACHE_REFRESH_SECONDS": os.getenv("CACHE_REFRESH_SECONDS", "120"),
         "MYSQL_HOST": os.getenv("MYSQL_HOST") or os.getenv("DATABASE_HOST", "localhost"),
         "MYSQL_PORT": os.getenv("MYSQL_PORT") or os.getenv("DATABASE_PORT", "3306"),
         "MYSQL_USER": os.getenv("MYSQL_USER") or os.getenv("DATABASE_USER", "root"),
@@ -544,7 +545,7 @@ def _energy_from_scans(scans, fallback: str = "") -> str:
     return fallback or "—"
 
 
-def read_delta4_scandidos(folder_path: str, signature: str = "114358"):
+def _read_delta4_scandidos_impl(folder_path: str, signature: str = "114358"):
     """
     Parcourt le dossier ciblé (et ses sous-dossiers) à la recherche du fichier
     d'irradiation ScandiDos Delta 4 (sans extension).
@@ -599,6 +600,32 @@ def read_delta4_scandidos(folder_path: str, signature: str = "114358"):
     except Exception as e:
         print(f"[ScandiDos Error] {e}")
     return None, None
+
+
+_SCANDIDOS_CACHE = {}   # (folder_path, signature) -> (datetime, fraction, duration)
+_SCANDIDOS_TTL_SEC = 150
+
+
+def read_delta4_scandidos(folder_path: str, signature: str = "114358"):
+    """
+    Version mémoïsée (TTL ~2 min 30) : le cache serveur est recalculé toutes les
+    2 minutes pour chaque onglet ; sans mémo, le parcours réseau ScandiDos serait
+    répété autant de fois que d'onglets Delta 4 à chaque cycle.
+    """
+    if not folder_path:
+        return None, None
+    key = (str(folder_path), signature)
+    now = datetime.now()
+    cached = _SCANDIDOS_CACHE.get(key)
+    if cached:
+        ts, frac, dur = cached
+        if (now - ts).total_seconds() < _SCANDIDOS_TTL_SEC:
+            return frac, dur
+    frac, dur = _read_delta4_scandidos_impl(folder_path, signature)
+    if len(_SCANDIDOS_CACHE) > 1000:
+        _SCANDIDOS_CACHE.clear()
+    _SCANDIDOS_CACHE[key] = (now, frac, dur)
+    return frac, dur
 
 
 def business_days_between(d1: datetime, d2: datetime) -> int:

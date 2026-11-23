@@ -1,4 +1,3 @@
-# *** app\models_local.py ***
 import json
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
@@ -156,6 +155,10 @@ def seed_defaults():
         'LOOKBACK_DAYS': ('14', 'Historique ARIA : nb de jours à remonter pour les CQ'),
         'SCAN_DEPTH': ('3', 'Profondeur max du scan réseau (sous-dossiers)'),
         'SCANDIDOS_SIGNATURE': ('114358', 'Signature des fichiers Scandidos'),
+        'CACHE_REFRESH_SECONDS': (
+            '120',
+            'Pré-calcul du dashboard en arrière-plan : intervalle de rafraîchissement (secondes). La base SQL ARIA se synchronise toutes les 3 min ; 120 s est un bon compromis. Min 10, max 3600.'
+        ),
         'YEAR_OVERLAP_DAYS': (
             '15',
             'Scan réseau IUCT : nb de jours de chevauchement en début/fin d\'année (ex: 15 → on scanne aussi N-1 en janvier et N+1 en décembre)'
